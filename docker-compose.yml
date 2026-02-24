@@ -1,0 +1,95 @@
+# =============================================================================
+# ERP-ViT 3D Classification — Docker Compose
+# =============================================================================
+#
+# Requirements on the lab machine:
+#   - Docker Engine >= 24.0
+#   - docker compose plugin (v2)  [part of Docker Desktop or Docker Engine]
+#   - nvidia-container-toolkit installed and configured:
+#       https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+#
+# Quick start:
+#   make build         # build the image
+#   make check-gpu     # verify GPU access inside the container
+#   make shell         # interactive bash session with GPU
+#
+# Training:
+#   make train CONFIG=configs/resnet34_hsdc_mn10.yaml
+#
+# Jupyter:
+#   make jupyter       # then SSH tunnel: ssh -L 8888:localhost:8888 user@lab
+# =============================================================================
+
+services:
+  erp-vit:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # Override CUDA/PyTorch version if needed:
+      # args:
+      #   PYTORCH_VERSION: "2.2.0"
+      #   CUDA_VERSION: "12.1"
+      #   CUDNN_VERSION: "8"
+    image: erp-vit:latest
+
+    # ── GPU access ──────────────────────────────────────────────────────────
+    # Requires nvidia-container-toolkit on the host.
+    # See: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all                # use all available GPUs
+              capabilities: [gpu]
+
+    # ── Shared memory ────────────────────────────────────────────────────────
+    # PyTorch DataLoader with num_workers > 0 needs >64 MB shared memory.
+    # 16 GB covers large batch sizes with 4–8 worker processes.
+    shm_size: '16g'
+
+    # ── IPC namespace ────────────────────────────────────────────────────────
+    # ipc: host  # Alternative to shm_size (shares host IPC); less isolated
+    #            # but avoids the shm_size limit. Uncomment if you hit
+    #            # "Bus error" from worker processes.
+
+    # ── File descriptor limits ───────────────────────────────────────────────
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+    # ── Volumes ──────────────────────────────────────────────────────────────
+    # data/ and experiments/ are NOT baked into the image (too large, gitignored).
+    # They are mounted from the host at runtime.
+    volumes:
+      - ./data:/workspace/data                       # raw meshes + ERP cache
+      - ./experiments:/workspace/experiments         # checkpoints, logs, CSVs
+      - ./notebooks:/workspace/notebooks             # Jupyter notebooks
+      # Optionally mount src/ for live code editing without rebuilding:
+      # - ./src:/workspace/src
+
+    # ── Environment ──────────────────────────────────────────────────────────
+    environment:
+      - PYTHONPATH=/workspace
+      - MPLBACKEND=Agg
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OMP_NUM_THREADS=4
+      - TOKENIZERS_PARALLELISM=false
+
+    # ── Ports ────────────────────────────────────────────────────────────────
+    # 8888: Jupyter Notebook / JupyterLab
+    # Access via SSH tunnel: ssh -L 8888:localhost:8888 user@lab-machine
+    ports:
+      - "8888:8888"
+
+    # ── Runtime ──────────────────────────────────────────────────────────────
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    restart: "no"           # explicit control; no auto-restart for research jobs
+
+    # Default command: interactive shell.
+    # Overridden by `docker compose run erp-vit <command>`.
+    command: bash

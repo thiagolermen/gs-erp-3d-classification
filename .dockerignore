@@ -1,0 +1,50 @@
+# Git internals
+.git/
+.gitignore
+
+# Python caches (rebuilt inside container)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Large data directories (mounted as volumes)
+data/
+experiments/
+
+# Papers (PDFs) — large, not needed at runtime
+papers/
+
+# Development environment
+.venv/
+venv/
+env/
+.env
+.envrc
+.tox/
+
+# Test caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+notebooks/**/.ipynb_checkpoints/
+
+# Agent / Claude config
+.claude/
+
+# Docs (not needed at runtime)
+docs/

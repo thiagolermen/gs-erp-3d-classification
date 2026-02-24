@@ -1,0 +1,638 @@
+"""Main training loop for ERP-ViT 3D Classification experiments.
+
+Implements the training protocol from the HSDC and SWHDC papers:
+
+  - CrossEntropyLoss (with optional label smoothing for Transformer experiments)
+  - Adam / AdamW optimiser, StepLR or cosine-annealing LR scheduler
+  - Gradient clipping (max_norm = 1.0)
+  - Mixed-precision training via torch.cuda.amp (CUDA only)
+  - Early stopping with patience = 25 epochs
+  - Per-epoch metrics logged to CSV and Python logging
+  - Best and last checkpoints saved per run
+  - Multi-GPU support via torch.nn.DataParallel
+
+Entry point::
+
+    python -m src.training.train --config configs/resnet34_hsdc_mn10.yaml
+
+Output (under ``experiments/<run_name>/``):
+
+    config.yaml          — copy of the config used
+    train.log            — Python logging output
+    metrics.csv          — epoch, train_loss, val_loss, train_acc, val_acc, lr
+    best_checkpoint.pt   — state dict at best val accuracy
+    last_checkpoint.pt   — state dict at final epoch
+
+References:
+    HSDC paper §III-A  — Stringhini et al., IEEE ICIP 2024
+    SWHDC paper §IV-A  — Stringhini et al., SIBGRAPI 2024
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import logging
+import random
+import shutil
+import time
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+import torch.nn as nn
+import yaml
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from src.models.backbones.resnet_hsdc import HSDCNet, SWHDCResNet
+from src.models.backbones.swin_hsdc import SwinHSDCNet
+from src.models.backbones.effnetv2_hsdc import EffNetV2HSDCNet
+from src.preprocessing.dataset import build_dataloaders
+from src.training.scheduler import EarlyStopping, build_optimizer, build_lr_scheduler
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Reproducibility
+# ---------------------------------------------------------------------------
+
+
+def set_seed(seed: int) -> None:
+    """Seed all RNGs for fully reproducible training runs.
+
+    Sets ``random``, ``numpy``, ``torch``, and CUDA seeds, and enables
+    deterministic cuDNN mode.
+
+    Args:
+        seed: Integer seed; stored in every experiment config.
+
+    References:
+        HSDC paper §III-A; SWHDC paper §IV-A (fixed-seed reproducibility)
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+# ---------------------------------------------------------------------------
+# Model factory
+# ---------------------------------------------------------------------------
+
+
+def build_model(cfg: dict) -> nn.Module:
+    """Instantiate a model from an experiment config dict.
+
+    Supported ``backbone + block`` combinations:
+
+    - ``resnet34  + hsdc``   → :class:`HSDCNet` (12-channel input)
+    - ``resnet50  + swhdc``  → :class:`SWHDCResNet` (1-channel input)
+    - ``swin_t    + hsdc``   → :class:`SwinHSDCNet` (12-channel, pipeline='hsdc')
+    - ``swin_t    + swhdc``  → :class:`SwinHSDCNet` (1-channel, pipeline='swhdc')
+    - ``efficientnetv2_s + hsdc``  → :class:`EffNetV2HSDCNet` (12-channel)
+    - ``efficientnetv2_s + swhdc`` → :class:`EffNetV2HSDCNet` (1-channel)
+
+    All models are initialised from scratch — ``pretrained=False`` is a
+    hard constraint for fair comparison with the papers (CLAUDE.md §Rules).
+
+    Args:
+        cfg: Full experiment config dict (reads ``cfg['model']``).
+
+    Returns:
+        Uninitialised (randomly-weighted) :class:`torch.nn.Module`.
+
+    Raises:
+        ValueError: If the backbone/block combination is unknown.
+    """
+    model_cfg   = cfg["model"]
+    backbone    = str(model_cfg["backbone"]).lower()
+    block       = str(model_cfg["block"]).lower()
+    num_classes = int(model_cfg["num_classes"])
+    erp_height  = int(model_cfg.get("erp_height", 256))
+
+    if backbone == "resnet34" and block == "hsdc":
+        return HSDCNet(in_channels=12, num_classes=num_classes)
+
+    if backbone == "resnet50" and block == "swhdc":
+        return SWHDCResNet(in_channels=1, num_classes=num_classes)
+
+    if backbone == "swin_t":
+        return SwinHSDCNet(
+            pipeline=block,
+            num_classes=num_classes,
+            erp_height=erp_height,
+            pretrained=False,
+        )
+
+    if backbone == "efficientnetv2_s":
+        return EffNetV2HSDCNet(
+            pipeline=block,
+            num_classes=num_classes,
+            erp_height=erp_height,
+            pretrained=False,
+        )
+
+    raise ValueError(
+        f"Unsupported backbone+block combination: '{backbone}' + '{block}'. "
+        "Valid options: resnet34+hsdc, resnet50+swhdc, "
+        "swin_t+hsdc, swin_t+swhdc, efficientnetv2_s+hsdc, efficientnetv2_s+swhdc."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Training / validation epoch
+# ---------------------------------------------------------------------------
+
+
+def train_one_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.cuda.amp.GradScaler,
+    device: torch.device,
+    grad_clip: float,
+    use_amp: bool = True,
+) -> tuple[float, float]:
+    """Run one full training epoch.
+
+    Applies:
+    - Forward pass (with optional AMP autocast)
+    - CrossEntropyLoss (with optional label smoothing already baked into
+      *criterion*)
+    - Backward pass scaled by *scaler* (identity transform when AMP disabled)
+    - Gradient clipping to ``max_norm = grad_clip``
+    - Optimizer step
+
+    Args:
+        model:     Model in ``train()`` mode.
+        loader:    Training :class:`DataLoader`.
+        criterion: Loss function (e.g. ``nn.CrossEntropyLoss``).
+        optimizer: Configured optimizer.
+        scaler:    AMP :class:`GradScaler` (no-op when ``enabled=False``).
+        device:    Target device.
+        grad_clip: Max gradient norm for :func:`torch.nn.utils.clip_grad_norm_`.
+        use_amp:   Enable FP16 mixed-precision (CUDA only).
+
+    Returns:
+        Tuple ``(mean_loss, accuracy_percent)`` over all batches.
+
+    References:
+        HSDC paper §III-A — gradient clipping, AMP
+    """
+    model.train()
+    total_loss    = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    pbar = tqdm(loader, desc="  Train", leave=False, dynamic_ncols=True)
+    for inputs, targets in pbar:
+        inputs  = inputs.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+
+        optimizer.zero_grad(set_to_none=True)
+
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            logits = model(inputs)
+            loss   = criterion(logits, targets)
+
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
+
+        b              = inputs.size(0)
+        total_loss    += loss.item() * b
+        preds          = logits.argmax(dim=1)
+        total_correct += (preds == targets).sum().item()
+        total_samples += b
+
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
+
+    mean_loss = total_loss / max(total_samples, 1)
+    accuracy  = 100.0 * total_correct / max(total_samples, 1)
+    return mean_loss, accuracy
+
+
+@torch.no_grad()
+def eval_one_epoch(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+) -> tuple[float, float]:
+    """Run one evaluation epoch (val or test set).
+
+    Gradients are disabled throughout (``@torch.no_grad()``).
+
+    Args:
+        model:     Model in ``eval()`` mode.
+        loader:    Validation / test :class:`DataLoader`.
+        criterion: Loss function.
+        device:    Target device.
+
+    Returns:
+        Tuple ``(mean_loss, accuracy_percent)`` over all batches.
+    """
+    model.eval()
+    total_loss    = 0.0
+    total_correct = 0
+    total_samples = 0
+
+    for inputs, targets in loader:
+        inputs  = inputs.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
+
+        logits = model(inputs)
+        loss   = criterion(logits, targets)
+
+        b              = inputs.size(0)
+        total_loss    += loss.item() * b
+        preds          = logits.argmax(dim=1)
+        total_correct += (preds == targets).sum().item()
+        total_samples += b
+
+    mean_loss = total_loss / max(total_samples, 1)
+    accuracy  = 100.0 * total_correct / max(total_samples, 1)
+    return mean_loss, accuracy
+
+
+# ---------------------------------------------------------------------------
+# Checkpointing helpers
+# ---------------------------------------------------------------------------
+
+
+def save_checkpoint(
+    path: Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    early_stopping: EarlyStopping,
+    epoch: int,
+    val_acc: float,
+) -> None:
+    """Serialise model, optimizer, scheduler, and early-stopping state.
+
+    Unwraps :class:`torch.nn.DataParallel` automatically so that checkpoints
+    are portable to single-GPU and CPU environments.
+
+    Args:
+        path:           Destination ``.pt`` file.
+        model:          Model (may be wrapped in ``DataParallel``).
+        optimizer:      Current optimizer.
+        scheduler:      Current LR scheduler.
+        early_stopping: Early-stopping tracker.
+        epoch:          Current epoch number.
+        val_acc:        Validation accuracy at this epoch.
+    """
+    model_state = (
+        model.module.state_dict()
+        if isinstance(model, nn.DataParallel)
+        else model.state_dict()
+    )
+    torch.save(
+        {
+            "epoch": epoch,
+            "val_acc": val_acc,
+            "model_state_dict": model_state,
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "early_stopping_state": early_stopping.state_dict(),
+        },
+        path,
+    )
+
+
+def load_checkpoint(
+    path: Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer | None = None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    early_stopping: EarlyStopping | None = None,
+    device: torch.device | None = None,
+) -> dict[str, Any]:
+    """Restore model (and optionally optimizer / scheduler) from a checkpoint.
+
+    Handles :class:`torch.nn.DataParallel` wrappers transparently.
+
+    Args:
+        path:            Path to the ``.pt`` checkpoint file.
+        model:           Model to restore weights into.
+        optimizer:       Optional optimizer to restore (for resuming training).
+        scheduler:       Optional LR scheduler to restore.
+        early_stopping:  Optional early-stopping state to restore.
+        device:          Device to map tensors to (default: CPU).
+
+    Returns:
+        The raw checkpoint dict (contains ``'epoch'``, ``'val_acc'``, etc.).
+    """
+    ckpt  = torch.load(path, map_location=device or torch.device("cpu"))
+    state = ckpt["model_state_dict"]
+
+    if isinstance(model, nn.DataParallel):
+        model.module.load_state_dict(state)
+    else:
+        model.load_state_dict(state)
+
+    if optimizer is not None and "optimizer_state_dict" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+    if scheduler is not None and "scheduler_state_dict" in ckpt:
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+    if early_stopping is not None and "early_stopping_state" in ckpt:
+        early_stopping.load_state_dict(ckpt["early_stopping_state"])
+
+    return ckpt
+
+
+# ---------------------------------------------------------------------------
+# Logging helper
+# ---------------------------------------------------------------------------
+
+
+def _setup_logging(log_path: Path) -> None:
+    """Add a file handler to the root logger (avoids duplicate handlers)."""
+    fmt     = "%(asctime)s | %(levelname)-8s | %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    root    = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # Console handler — add once
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+               for h in root.handlers):
+        ch = logging.StreamHandler()
+        ch.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+        root.addHandler(ch)
+
+    # File handler — always add (each run gets its own file)
+    fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    fh.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    root.addHandler(fh)
+
+
+# ---------------------------------------------------------------------------
+# Main training function
+# ---------------------------------------------------------------------------
+
+
+def run_training(config_path: Path) -> dict[str, Any]:
+    """Run a complete training experiment from a YAML config file.
+
+    Workflow:
+
+    1. Load and parse the YAML config.
+    2. Set all RNG seeds for reproducibility.
+    3. Create the experiment output directory; copy config.
+    4. Set up Python logging to file + console.
+    5. Build train/val/test DataLoaders from the ERP cache.
+    6. Instantiate the model (from scratch; no ImageNet pretraining).
+    7. Wrap in ``DataParallel`` if multiple GPUs are available.
+    8. Build optimizer, LR scheduler, and early-stopping tracker.
+    9. Epoch loop: train → validate → scheduler.step → LR clamp → log.
+    10. Save best and last checkpoints; write per-epoch CSV metrics.
+    11. Return a summary dict.
+
+    Args:
+        config_path: Path to the YAML experiment config file.
+
+    Returns:
+        Summary dict with keys ``run_name``, ``best_val_acc``, ``best_epoch``,
+        ``final_epoch``, ``experiment_dir``.
+
+    References:
+        HSDC paper §III-A; SWHDC paper §IV-A
+    """
+    # ------------------------------------------------------------------
+    # 1. Config
+    # ------------------------------------------------------------------
+    with open(config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+
+    run_name = str(cfg["run_name"])
+    seed     = int(cfg.get("seed", 42))
+    set_seed(seed)
+
+    # ------------------------------------------------------------------
+    # 2. Experiment directory
+    # ------------------------------------------------------------------
+    exp_root = Path(cfg.get("output", {}).get("experiments_dir", "experiments"))
+    exp_dir  = exp_root / run_name
+    exp_dir.mkdir(parents=True, exist_ok=True)
+
+    shutil.copy(config_path, exp_dir / "config.yaml")
+
+    # ------------------------------------------------------------------
+    # 3. Logging
+    # ------------------------------------------------------------------
+    _setup_logging(exp_dir / "train.log")
+    logger.info("=" * 70)
+    logger.info("Run       : %s", run_name)
+    logger.info("Config    : %s", config_path)
+    logger.info("Seed      : %d", seed)
+
+    # ------------------------------------------------------------------
+    # 4. Device
+    # ------------------------------------------------------------------
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("Device    : %s", device)
+    if device.type == "cuda":
+        logger.info("GPU       : %s", torch.cuda.get_device_name(0))
+
+    # ------------------------------------------------------------------
+    # 5. Data
+    # ------------------------------------------------------------------
+    data_cfg = cfg["data"]
+    model_cfg = cfg["model"]
+
+    loaders = build_dataloaders(
+        data_root=Path(data_cfg["data_root"]),
+        cache_dir=Path(data_cfg["cache_dir"]),
+        pipeline=str(data_cfg["pipeline"]),
+        batch_size=int(data_cfg.get("batch_size", 32)),
+        num_workers=int(data_cfg.get("num_workers", 4)),
+        width=int(model_cfg.get("erp_width", 512)),
+        height=int(model_cfg.get("erp_height", 256)),
+        train_val_split=float(data_cfg.get("train_val_split", 0.8)),
+        seed=seed,
+    )
+    logger.info(
+        "Splits    : train=%d  val=%d  test=%d",
+        len(loaders["train"].dataset),
+        len(loaders["val"].dataset),
+        len(loaders["test"].dataset),
+    )
+
+    # ------------------------------------------------------------------
+    # 6. Model
+    # ------------------------------------------------------------------
+    model = build_model(cfg)
+
+    if torch.cuda.device_count() > 1:
+        logger.info("DataParallel across %d GPUs", torch.cuda.device_count())
+        model = nn.DataParallel(model)
+
+    model = model.to(device)
+    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info("Parameters: %s trainable", f"{n_params:,}")
+
+    # ------------------------------------------------------------------
+    # 7. Loss
+    # ------------------------------------------------------------------
+    train_cfg = cfg["training"]
+    label_smoothing = float(train_cfg.get("label_smoothing", 0.0))
+    criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
+    # ------------------------------------------------------------------
+    # 8. Optimizer, LR scheduler, early stopping
+    # ------------------------------------------------------------------
+    optimizer      = build_optimizer(model, cfg)
+    scheduler      = build_lr_scheduler(optimizer, cfg)
+    early_stopping = EarlyStopping(patience=int(train_cfg.get("early_stopping_patience", 25)))
+
+    lr_min     = float(train_cfg.get("lr_min", 1e-7))
+    grad_clip  = float(train_cfg.get("gradient_clip_norm", 1.0))
+    max_epochs = int(train_cfg["max_epochs"])
+    save_every = int(cfg.get("output", {}).get("save_every_n_epochs", 0))
+
+    # ------------------------------------------------------------------
+    # 9. AMP
+    # ------------------------------------------------------------------
+    use_amp = bool(train_cfg.get("mixed_precision", True)) and device.type == "cuda"
+    scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
+    logger.info("AMP       : %s", use_amp)
+    logger.info("Max epochs: %d  |  early-stop patience: %d", max_epochs, early_stopping.patience)
+
+    # ------------------------------------------------------------------
+    # 10. CSV metrics file
+    # ------------------------------------------------------------------
+    csv_path = exp_dir / "metrics.csv"
+    csv_fh   = open(csv_path, "w", newline="", encoding="utf-8")
+    writer   = csv.writer(csv_fh)
+    writer.writerow(["epoch", "train_loss", "val_loss", "train_acc", "val_acc", "lr"])
+
+    best_val_acc   = -1.0
+    best_epoch     = 0
+    best_ckpt_path = exp_dir / "best_checkpoint.pt"
+    last_ckpt_path = exp_dir / "last_checkpoint.pt"
+
+    t_start = time.time()
+
+    # ------------------------------------------------------------------
+    # 11. Epoch loop
+    # ------------------------------------------------------------------
+    logger.info("=" * 70)
+    final_epoch = 0
+
+    for epoch in range(1, max_epochs + 1):
+        final_epoch = epoch
+
+        # Train
+        train_loss, train_acc = train_one_epoch(
+            model, loaders["train"], criterion, optimizer, scaler,
+            device, grad_clip, use_amp,
+        )
+
+        # Validate
+        val_loss, val_acc = eval_one_epoch(model, loaders["val"], criterion, device)
+
+        # Step LR scheduler, then enforce floor
+        scheduler.step()
+        for pg in optimizer.param_groups:
+            if pg["lr"] < lr_min:
+                pg["lr"] = lr_min
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        # Persist to CSV
+        writer.writerow([epoch, f"{train_loss:.6f}", f"{val_loss:.6f}",
+                         f"{train_acc:.4f}", f"{val_acc:.4f}", f"{current_lr:.2e}"])
+        csv_fh.flush()
+
+        # Log
+        logger.info(
+            "Ep %4d/%d | "
+            "tr_loss=%.4f  tr_acc=%6.2f%%  "
+            "val_loss=%.4f  val_acc=%6.2f%%  "
+            "lr=%.2e  pat=%d/%d",
+            epoch, max_epochs,
+            train_loss, train_acc,
+            val_loss, val_acc,
+            current_lr,
+            early_stopping.counter, early_stopping.patience,
+        )
+
+        # Save best checkpoint
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_epoch   = epoch
+            save_checkpoint(
+                best_ckpt_path, model, optimizer, scheduler, early_stopping, epoch, val_acc
+            )
+            logger.info("  → best_checkpoint.pt  (val_acc=%.2f%%)", val_acc)
+
+        # Save last checkpoint every epoch (cheap; enables resume)
+        save_checkpoint(
+            last_ckpt_path, model, optimizer, scheduler, early_stopping, epoch, val_acc
+        )
+
+        # Optional periodic checkpoint
+        if save_every > 0 and epoch % save_every == 0:
+            save_checkpoint(
+                exp_dir / f"checkpoint_ep{epoch:04d}.pt",
+                model, optimizer, scheduler, early_stopping, epoch, val_acc,
+            )
+
+        # Early stopping
+        if early_stopping.step(val_acc):
+            logger.info(
+                "Early stopping at epoch %d — patience=%d exhausted.",
+                epoch, early_stopping.patience,
+            )
+            break
+
+    # ------------------------------------------------------------------
+    # 12. Wrap up
+    # ------------------------------------------------------------------
+    csv_fh.close()
+    elapsed = time.time() - t_start
+    logger.info("=" * 70)
+    logger.info(
+        "Done. best_val_acc=%.2f%% at epoch %d.  Total time: %.0f s (%.1f min).",
+        best_val_acc, best_epoch, elapsed, elapsed / 60,
+    )
+
+    return {
+        "run_name":       run_name,
+        "best_val_acc":   best_val_acc,
+        "best_epoch":     best_epoch,
+        "final_epoch":    final_epoch,
+        "experiment_dir": str(exp_dir),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    parser = argparse.ArgumentParser(description="Train an ERP 3D classification model.")
+    parser.add_argument(
+        "--config", type=Path, required=True,
+        help="Path to the YAML experiment config file.",
+    )
+    args = parser.parse_args()
+    run_training(args.config)
+
+
+if __name__ == "__main__":
+    main()
