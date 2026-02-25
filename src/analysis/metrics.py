@@ -344,11 +344,14 @@ def load_run_metrics(run_dir: Path) -> pd.DataFrame:
 def load_test_results(run_dir: Path) -> dict[str, float]:
     """Load final test-set results from ``<run_dir>/test_results.json``.
 
+    Normalises key names for backward compatibility:
+    - ``top1_acc`` (percent) → also stored as ``oa`` (fraction) if absent.
+
     Args:
         run_dir: Path to the experiment run directory.
 
     Returns:
-        Dict with at least keys ``'oa'`` and ``'macc'``.
+        Dict with at least keys ``'oa'`` (fraction) and ``'macc'`` (fraction).
 
     Raises:
         FileNotFoundError: If ``test_results.json`` does not exist.
@@ -357,8 +360,18 @@ def load_test_results(run_dir: Path) -> dict[str, float]:
     json_path = Path(run_dir) / "test_results.json"
     if not json_path.exists():
         raise FileNotFoundError(f"test_results.json not found in '{run_dir}'")
-    with open(json_path) as f:
-        return json.load(f)
+    with open(json_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    # Normalise: if only top1_acc (percent) is present, derive oa (fraction)
+    if "oa" not in data and "top1_acc" in data:
+        data["oa"] = data["top1_acc"] / 100.0
+    # Ensure oa is a fraction (some older saves may store percent)
+    if "oa" in data and data["oa"] > 1.0:
+        data["oa"] = data["oa"] / 100.0
+    if "macc" in data and data["macc"] is not None and data["macc"] > 1.0:
+        data["macc"] = data["macc"] / 100.0
+    return data
 
 
 def load_predictions(run_dir: Path) -> tuple[np.ndarray, np.ndarray]:

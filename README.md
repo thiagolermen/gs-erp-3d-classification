@@ -124,43 +124,153 @@ erp-vit-3d-classification/
 │   │   │   └── effnetv2_hsdc.py   ← EfficientNetV2-S + HSDC / SWHDC (proposed)
 │   │   └── classifier.py          ← GAP → FC → softmax head
 │   ├── training/
-│   │   ├── train.py               ← epoch loop, loss, checkpointing
+│   │   ├── train.py               ← epoch loop, AMP, checkpointing
 │   │   ├── evaluate.py            ← test-set evaluation, top-1 accuracy
-│   │   └── scheduler.py           ← Adam, LR decay, early stopping
+│   │   └── scheduler.py           ← Adam/AdamW, StepLR, early stopping
 │   └── analysis/
 │       ├── metrics.py             ← accuracy, confusion matrix helpers
 │       ├── visualize.py           ← ERP channel plots, training curves
 │       └── compare.py             ← cross-run comparison utilities
-├── configs/
+├── configs/                       ← one YAML per experiment (10 total)
 │   ├── resnet34_hsdc_mn10.yaml
 │   ├── resnet34_hsdc_mn40.yaml
 │   ├── resnet50_swhdc_mn10.yaml
 │   ├── resnet50_swhdc_mn40.yaml
-│   ├── swin_hsdc_mn10.yaml
-│   ├── swin_hsdc_mn40.yaml
-│   ├── swin_swhdc_mn40.yaml
+│   ├── swin_hsdc_mn10.yaml  /  swin_hsdc_mn40.yaml
+│   ├── swin_swhdc_mn10.yaml  /  swin_swhdc_mn40.yaml
 │   ├── effnetv2_hsdc_mn40.yaml
 │   └── effnetv2_swhdc_mn40.yaml
 ├── experiments/                   ← run outputs: checkpoints, logs, CSVs (gitignored)
 ├── data/                          ← raw and processed ModelNet data (gitignored)
-│   ├── raw/
-│   │   ├── modelnet10/
-│   │   └── modelnet40/
-│   └── processed/
+│   ├── raw/modelnet10/  /  raw/modelnet40/
+│   └── processed/modelnet10/  /  processed/modelnet40/
 ├── notebooks/
 │   └── results_analysis.ipynb     ← master results analysis notebook
-├── tests/                         ← unit tests
+├── scripts/
+│   ├── check_gpu.py               ← CUDA + GPU sanity check
+│   ├── preprocess_all.sh          ← generate all ERP caches (run inside container)
+│   └── run_baselines.sh           ← train all four baseline experiments
+├── tests/                         ← unit tests (pytest)
 ├── docs/
-│   └── architecture.md            ← Mermaid / ASCII architecture diagrams
+│   ├── technical_documentation.md ← full method description
+│   ├── architecture.md            ← Mermaid architecture diagrams
+│   └── DOCKER_SETUP.md            ← Docker + SSH remote-training guide
+├── Dockerfile
+├── docker-compose.yml
+├── Makefile                       ← all operations as make targets
+├── pyproject.toml
 ├── papers/                        ← reference PDFs
-├── CLAUDE.md
 ├── README.md
 └── requirements.txt
 ```
 
 ---
 
-## Setup
+## Quick Start (Docker — recommended for remote training)
+
+The entire pipeline runs inside a Docker container with CUDA support. This is the recommended way to run experiments on the lab machine.
+
+> **Full guide:** [`docs/DOCKER_SETUP.md`](docs/DOCKER_SETUP.md)
+
+### Requirements on the lab machine
+
+- Docker Engine ≥ 24 with `docker compose` plugin
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+- NVIDIA driver ≥ 525.60 (for CUDA 12.1)
+
+### Step-by-step
+
+```bash
+# 1. Clone and enter the repo
+git clone <repo-url> erp-vit-3d-classification
+cd erp-vit-3d-classification
+
+# 2. Place ModelNet data (https://modelnet.cs.princeton.edu/)
+mkdir -p data/raw/modelnet10 data/raw/modelnet40
+# extract ModelNet10 → data/raw/modelnet10/<class>/{train,test}/*.off
+# extract ModelNet40 → data/raw/modelnet40/<class>/{train,test}/*.off
+
+# 3. Build the Docker image
+make build
+
+# 4. Verify GPU access
+make check-gpu
+
+# 5. Pre-compute ERP image cache (one-time, ~9 h for both datasets)
+make preprocess-all
+
+# 6. Reproduce baselines (in a tmux session for long runs)
+make baselines-all                  # ~10 h total on a single RTX 3090
+
+# 7. Run proposed experiments
+make train CONFIG=configs/swin_hsdc_mn40.yaml
+make train CONFIG=configs/swin_swhdc_mn40.yaml
+make train CONFIG=configs/effnetv2_hsdc_mn40.yaml
+make train CONFIG=configs/effnetv2_swhdc_mn40.yaml
+
+# 8. Evaluate best checkpoint
+make evaluate \
+  CONFIG=configs/resnet34_hsdc_mn10.yaml \
+  CHECKPOINT=experiments/resnet34_hsdc_mn10_seed42/best_checkpoint.pt
+```
+
+### Running from home via SSH
+
+```bash
+# On the lab machine — start a persistent tmux session
+tmux new-session -s exp
+make train CONFIG=configs/swin_hsdc_mn40.yaml
+# Ctrl+B D  (detach — training continues)
+
+# From home — reattach to watch progress
+ssh user@lab-machine
+tmux attach -t exp
+# or stream the log:
+make logs RUN_NAME=swin_t_hsdc_mn40_seed42
+```
+
+### Jupyter notebook from home
+
+```bash
+# On the lab machine
+make jupyter
+
+# In a separate terminal at home — open SSH tunnel
+ssh -L 8888:localhost:8888 -N user@lab-machine
+
+# Open in browser
+# http://localhost:8888   |   Token: erp-vit
+```
+
+### All `make` targets
+
+```
+make build                          # build Docker image
+make shell                          # interactive GPU bash session
+make check-gpu                      # verify CUDA + GPU
+make test                           # run pytest suite
+make jupyter                        # Jupyter on port 8888
+
+make preprocess-mn10-hsdc           # 12-ch ERP for ModelNet10
+make preprocess-mn10-swhdc          #  1-ch ERP for ModelNet10
+make preprocess-mn40-hsdc           # 12-ch ERP for ModelNet40
+make preprocess-mn40-swhdc          #  1-ch ERP for ModelNet40
+make preprocess-all                 # all four above
+
+make train CONFIG=<yaml>            # train one experiment
+make baselines-mn10                 # ResNet-34+HSDC and ResNet-50+SWHDC on MN10
+make baselines-mn40                 # same on MN40
+make baselines-all                  # all four baselines
+
+make evaluate CONFIG=<yaml> CHECKPOINT=<pt>
+
+make logs RUN_NAME=<run>            # tail -f train.log
+make clean                          # remove experiments/ (asks confirmation)
+```
+
+---
+
+## Local Development (without Docker)
 
 ```bash
 # 1. Create virtual environment
@@ -169,12 +279,10 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
 # 2. Install dependencies
 pip install -r requirements.txt
+pip install -e .                 # install src/ as editable package
 
-# 3. Download ModelNet data
-#    ModelNet10 and ModelNet40: https://modelnet.cs.princeton.edu/
-#    Place extracted datasets under:
-#      data/raw/modelnet10/
-#      data/raw/modelnet40/
+# 3. Run tests
+pytest tests/
 ```
 
 ---
@@ -184,18 +292,22 @@ pip install -r requirements.txt
 All models are trained **from scratch** (no ImageNet pretraining), consistent with the original papers — ERP images differ substantially from natural perspective images and pretraining on ImageNet has not been shown to help in this setting.
 
 ```bash
-# Baseline: ResNet-34 + HSDC on ModelNet10
-python src/training/train.py --config configs/resnet34_hsdc_mn10.yaml
+# Via Docker (recommended):
+make train CONFIG=configs/resnet34_hsdc_mn10.yaml
 
-# Baseline: ResNet-50 + SWHDC on ModelNet40
-python src/training/train.py --config configs/resnet50_swhdc_mn40.yaml
-
-# Proposed: Swin-T + HSDC on ModelNet40
-python src/training/train.py --config configs/swin_hsdc_mn40.yaml
-
-# Proposed: EfficientNetV2-S + SWHDC on ModelNet40
-python src/training/train.py --config configs/effnetv2_swhdc_mn40.yaml
+# Directly (local dev):
+python -m src.training.train --config configs/resnet34_hsdc_mn10.yaml
 ```
+
+Each run produces under `experiments/<run_name>/`:
+
+| File | Contents |
+|---|---|
+| `config.yaml` | Copy of the YAML config used |
+| `train.log` | Python logging output |
+| `metrics.csv` | epoch, train\_loss, val\_loss, train\_acc, val\_acc, lr |
+| `best_checkpoint.pt` | Model weights at best validation accuracy |
+| `last_checkpoint.pt` | Model weights at final epoch |
 
 ---
 

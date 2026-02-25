@@ -224,11 +224,13 @@ def plot_training_curves(
         ax1.legend(loc="upper right")
 
     # --- Accuracy panel ---
+    # NOTE: train_acc / val_acc are stored as percentages (0–100) in metrics.csv
+    # by train_one_epoch. Do NOT multiply by 100 here.
     ax2 = axes[1]
-    ax2.plot(epochs, df["train_acc"].values * 100, color="#2166ac", alpha=0.25, linewidth=0.8)
-    ax2.plot(epochs, df["val_acc"].values   * 100, color="#d6604d", alpha=0.25, linewidth=0.8)
-    ax2.plot(epochs, tr_acc_s  * 100, color="#2166ac", linewidth=1.8, label="Train acc")
-    ax2.plot(epochs, val_acc_s * 100, color="#d6604d", linewidth=1.8, label="Val acc")
+    ax2.plot(epochs, df["train_acc"].values, color="#2166ac", alpha=0.25, linewidth=0.8)
+    ax2.plot(epochs, df["val_acc"].values,   color="#d6604d", alpha=0.25, linewidth=0.8)
+    ax2.plot(epochs, tr_acc_s,  color="#2166ac", linewidth=1.8, label="Train acc")
+    ax2.plot(epochs, val_acc_s, color="#d6604d", linewidth=1.8, label="Val acc")
     ax2.set_xlabel("Epoch")
     ax2.set_ylabel("Accuracy (%)")
     ax2.legend(loc="lower right")

@@ -1,3 +1,16 @@
+# =============================================================================
+# Project-specific
+# =============================================================================
+
+# Raw and processed ModelNet data (too large for git)
+data/
+
+# Training outputs: checkpoints, logs, metrics CSVs
+experiments/
+
+# =============================================================================
+# Python
+# =============================================================================
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

@@ -24,6 +24,7 @@ References:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -205,6 +206,49 @@ def run_evaluation(
         logger.info("Classification report:\n%s", report)
     except ImportError:
         logger.warning("scikit-learn not available — skipping classification report.")
+
+    # ------------------------------------------------------------------
+    # Save artefacts to the run directory alongside the checkpoint
+    # ------------------------------------------------------------------
+    run_dir = checkpoint_path.parent
+
+    # Mean class accuracy (macro-averaged recall)
+    num_cls = len(class_names)
+    per_cls_list = [results["per_class_acc"].get(c, 0.0) for c in range(num_cls)]
+    macc = float(np.mean(per_cls_list)) / 100.0   # fraction
+
+    # Parameter count
+    try:
+        params_m = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
+    except Exception:
+        params_m = None
+
+    # test_results.json — keys match src/analysis/compare.py expectations
+    test_json = {
+        "oa":         results["top1_acc"] / 100.0,   # fraction in [0,1]
+        "macc":       macc,
+        "top1_acc":   results["top1_acc"],            # percent, for backward compat
+        "params_m":   params_m,
+        "num_classes": num_cls,
+    }
+    json_path = run_dir / "test_results.json"
+    with open(json_path, "w", encoding="utf-8") as jf:
+        json.dump(test_json, jf, indent=2)
+    logger.info("Saved test results → %s", json_path)
+
+    # predictions.npz — ground truth and predicted labels for McNemar / confusion matrix
+    npz_path = run_dir / "predictions.npz"
+    np.savez(
+        str(npz_path),
+        y_true=np.array(results["all_targets"], dtype=np.int32),
+        y_pred=np.array(results["all_preds"],   dtype=np.int32),
+    )
+    logger.info("Saved predictions → %s", npz_path)
+
+    # confusion_matrix.npy — raw integer counts
+    cm_path = run_dir / "confusion_matrix.npy"
+    np.save(str(cm_path), results["confusion_matrix"])
+    logger.info("Saved confusion matrix → %s", cm_path)
 
     return results
 
