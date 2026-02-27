@@ -24,11 +24,15 @@ from src.preprocessing.augmentation import (
     gaussian_noise_erp,
     augment,
 )
-from src.preprocessing.dataset import (
-    ERPDataset,
-    build_dataloaders,
-    precompute_dataset,
-)
+try:
+    from src.preprocessing.dataset import (
+        ERPDataset,
+        build_dataloaders,
+        precompute_dataset,
+    )
+except ModuleNotFoundError:
+    # torch not installed — Dataset/DataLoader unavailable (preprocessing still works)
+    pass
 
 __all__ = [
     "load_mesh",

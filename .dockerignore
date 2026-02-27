@@ -48,3 +48,9 @@ notebooks/**/.ipynb_checkpoints/
 
 # Docs (not needed at runtime)
 docs/
+
+# TCC LaTeX document (not needed at runtime)
+tcc/
+
+# Local machine requirements (CPU-only; the container uses requirements.txt)
+requirements-local.txt

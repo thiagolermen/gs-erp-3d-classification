@@ -1,12 +1,20 @@
 # Docker Setup Guide
 
 > Complete instructions for running the ERP-ViT pipeline on a remote Linux GPU machine accessed via SSH.
+>
+> **Split workflow summary:**
+> - **Local machine (no GPU):** data preprocessing + notebooks — Python venv, `requirements-local.txt`
+> - **Lab machine (GPU):** training + evaluation + git push — Docker, `docker-compose.yml`
 
 ---
 
 ## Prerequisites
 
 ### On the lab machine (Linux, one-time setup)
+
+> **Note:** Preprocessing is done on the **local machine** (no GPU needed).
+> The lab machine is only used for training and evaluation.
+> See the README "Local Machine Setup" section for local preprocessing instructions.
 
 1. **Docker Engine** ≥ 24.0 with the Compose plugin:
    ```bash
@@ -255,6 +263,94 @@ environment:
 
 ---
 
+## Git Push from Inside the Container
+
+The `docker-compose.yml` mounts the entire project directory (including `.git/`)
+at `/workspace`, and mounts `~/.ssh` and `~/.gitconfig` from the lab machine host.
+Git operations inside the container work exactly like on the host.
+
+### One-time setup on the lab machine host
+
+```bash
+# 1. Configure git identity (required for commits)
+git config --global user.name  "Your Name"
+git config --global user.email "you@example.com"
+
+# 2a. SSH key (for git push over SSH, e.g. git@github.com:...)
+#     Check if a key already exists:
+ls ~/.ssh/id_*.pub
+#     If not, generate one:
+ssh-keygen -t ed25519 -C "you@example.com"
+#     Add the public key to GitHub:
+#       GitHub → Settings → SSH and GPG keys → New SSH key
+cat ~/.ssh/id_ed25519.pub
+#     Test the connection (should print "Hi <user>! You've successfully authenticated"):
+ssh -T git@github.com
+
+# 2b. Alternative — HTTPS with a Personal Access Token (no SSH key needed):
+#     Inside the container, run once:
+#       git config --global credential.helper store
+#       git remote set-url origin https://<TOKEN>@github.com/<user>/<repo>.git
+```
+
+### Daily workflow
+
+```bash
+# Open an interactive container session
+make shell
+
+# Inside the container — standard git workflow
+git status
+git add src/models/backbones/swin_hsdc.py configs/swin_hsdc_mn40.yaml
+git commit -m "feat: update Swin-T HSDC integration"
+git push origin main
+
+# Exit the container
+exit
+```
+
+> **File ownership note:** The container runs as `root`.  Files created inside the
+> container will be owned by root on the host filesystem.  If you need to edit
+> them outside the container, fix ownership with:
+> ```bash
+> sudo chown -R $USER:$USER .
+> ```
+
+### Troubleshooting git inside the container
+
+**`~/.gitconfig is a directory` error**
+Docker created `~/.gitconfig` as a directory because it didn't exist on the host.
+Fix on the lab machine (outside the container):
+```bash
+sudo rm -rf ~/.gitconfig
+git config --global user.name  "Your Name"
+git config --global user.email "you@example.com"
+```
+
+**`Permission denied (publickey)` when running git push**
+```bash
+# Test SSH connection on the lab machine host (outside container)
+ssh -T git@github.com
+
+# Fix SSH key permissions if needed
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/id_ed25519
+chmod 644 ~/.ssh/id_ed25519.pub
+```
+
+**Remote URL uses HTTPS but prompts for password**
+Switch to SSH:
+```bash
+git remote set-url origin git@github.com:<user>/<repo>.git
+```
+Or store a PAT (Personal Access Token):
+```bash
+git config --global credential.helper store
+# The first git push will prompt for user + token; stored after that.
+```
+
+---
+
 ## Common issues
 
 ### `could not select device driver "nvidia"`
@@ -305,18 +401,42 @@ export PYTHONPATH=$(pwd)
 ## Typical workflow summary
 
 ```
-Lab machine                         Home machine
-──────────────────────────────────  ──────────────────
-1. git clone + data setup
-2. make build
-3. make check-gpu
-4. make preprocess-all              (wait ~9 h)
-5. tmux new -s exp1
-6. make baselines-all               Ctrl+B, D to detach
-                                    ssh -L 8888:localhost:8888 user@lab
-                                    make jupyter  (from lab)
-                                    http://localhost:8888  (from browser)
-7. (after baselines pass)
-   make train CONFIG=configs/swin_hsdc_mn40.yaml
-8. make evaluate CONFIG=... CHECKPOINT=...
+LOCAL MACHINE (no GPU)                    LAB MACHINE (GPU, via SSH + Docker)
+────────────────────────────────────────  ──────────────────────────────────────
+1. python -m venv .venv
+   pip install torch ... (CPU)
+   pip install -r requirements-local.txt
+   pip install -e . --no-deps
+
+2. Download ModelNet → data/raw/
+
+3. Preprocess:
+   python scripts/preprocess_dataset.py \
+     --data_root data/raw/modelnet10 \
+     --cache_dir data/processed/modelnet10/hsdc \
+     --pipeline  hsdc
+   (repeat for swhdc, modelnet40 — ~3 h total CPU)
+
+4. Transfer cache to lab:
+   rsync -avz data/processed/ \
+     user@lab:~/erp-vit/data/processed/
+
+                                          5. git clone + cd into repo
+                                          6. make build
+                                          7. make check-gpu
+                                          8. tmux new -s training
+                                             make baselines-all
+                                             (Ctrl+B D — detach; runs in bg)
+
+                                          9. Monitor from anywhere:
+                                             make logs RUN_NAME=resnet34_hsdc_mn10_seed42
+
+                                         10. Jupyter (optional):
+                                             make jupyter
+   ssh -L 8888:localhost:8888 -N user@lab
+   http://localhost:8888  (token: erp-vit)
+
+                                         11. Git push when ready:
+                                             make shell
+                                             git add ... && git commit && git push
 ```

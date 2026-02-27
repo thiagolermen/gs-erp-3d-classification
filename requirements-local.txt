@@ -1,0 +1,53 @@
+# =============================================================================
+# Local machine — CPU-only requirements
+# =============================================================================
+# Use this file on your local machine (no GPU) for:
+#   - ERP data preprocessing  (scripts/preprocess_dataset.py)
+#   - Jupyter notebook exploration  (notebooks/)
+#
+# Training and evaluation must be done on the lab machine via Docker (GPU).
+#
+# Full setup instructions are in the README under "Local Machine Setup".
+#
+# Quick start:
+#   python -m venv .venv
+#
+#   # Activate — Windows CMD:
+#   .venv\Scripts\activate.bat
+#   # Activate — Windows PowerShell:
+#   .venv\Scripts\Activate.ps1
+#   # Activate — macOS / Linux:
+#   source .venv/bin/activate
+#
+#   # Step 1 — PyTorch CPU-only (much smaller than the CUDA build):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#
+#   # Step 2 — Remaining dependencies:
+#   pip install -r requirements-local.txt
+#
+#   # Step 3 — Project package in editable mode:
+#   pip install -e . --no-deps
+# =============================================================================
+
+# --- Numerical / scientific ---
+numpy>=1.26.0
+scipy>=1.13.0
+
+# --- 3D mesh loading (ray-casting and ERP generation) ---
+trimesh>=4.3.0
+rtree>=1.2.0          # spatial index used by trimesh for ray-mesh intersection
+
+# --- Data utilities ---
+pandas>=2.2.0
+tqdm>=4.66.0
+PyYAML>=6.0.1
+
+# --- Visualization (for notebooks and ERP sample inspection) ---
+matplotlib>=3.9.0
+seaborn>=0.13.2
+scikit-learn>=1.5.0
+
+# --- Jupyter ---
+jupyter>=1.1.0
+ipykernel>=6.29.0
+ipywidgets>=8.0.0
