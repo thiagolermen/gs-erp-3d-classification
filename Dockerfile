@@ -1,5 +1,5 @@
 # =============================================================================
-# ERP-ViT 3D Classification — Docker Image
+# GS-ERP 3D Classification — Docker Image
 # =============================================================================
 #
 # Base:  PyTorch 2.2.0 + CUDA 12.1 + cuDNN 8 (runtime)
@@ -9,11 +9,9 @@
 #
 # Build:
 #   docker compose build
-#   # or
-#   docker build -t erp-vit:latest .
 #
 # Quick start:
-#   docker compose run --rm erp-vit bash
+#   docker compose run --rm gs-erp bash
 # =============================================================================
 
 # Allow overriding CUDA/PyTorch version at build time
@@ -23,9 +21,9 @@ ARG CUDNN_VERSION=8
 
 FROM pytorch/pytorch:${PYTORCH_VERSION}-cuda${CUDA_VERSION}-cudnn${CUDNN_VERSION}-runtime
 
-LABEL org.opencontainers.image.title="erp-vit-3d-classification" \
-      org.opencontainers.image.description="ERP-based 3D object classification (UFRGS TCC)" \
-      org.opencontainers.image.source="https://github.com/UFRGS-TCC/erp-vit-3d-classification"
+LABEL org.opencontainers.image.title="gs-erp-3d-classification" \
+      org.opencontainers.image.description="GS-ERP 3D object classification (UFRGS TCC)" \
+      org.opencontainers.image.source="https://github.com/thiagolermen/gs-erp-3d-classification"
 
 # =============================================================================
 # 1. System dependencies
@@ -94,7 +92,7 @@ ENV TOKENIZERS_PARALLELISM=false
 # 5. Runtime directories
 # =============================================================================
 # Create mount-point stubs; actual content comes from docker-compose volumes.
-RUN mkdir -p /workspace/data/raw \
+RUN mkdir -p /workspace/gs_data \
              /workspace/data/processed \
              /workspace/experiments \
              /workspace/notebooks
