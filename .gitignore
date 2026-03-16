@@ -4,6 +4,7 @@
 
 # Raw and processed ModelNet data (too large for git)
 data/
+gs_data/
 
 # Training outputs: checkpoints, logs, metrics CSVs
 experiments/
@@ -218,3 +219,15 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Papers
+papers/
+
+# Agent / Claude config
+.claude/
+
+# Docs (not needed at runtime)
+docs/diagrams/
+
+# TCC LaTeX document (not needed at runtime)
+tcc/

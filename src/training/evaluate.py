@@ -1,4 +1,4 @@
-"""Test-set evaluation for ERP-ViT 3D Classification experiments.
+"""Test-set evaluation for GS-ERP 3D Classification experiments.
 
 Loads a saved checkpoint, runs the official test split, and reports:
 
@@ -161,22 +161,9 @@ def run_evaluation(
     # ------------------------------------------------------------------
     # Build test DataLoader (test split only — never used for model selection)
     # ------------------------------------------------------------------
-    data_cfg  = cfg["data"]
-    model_cfg = cfg["model"]
+    loaders = build_dataloaders(cfg)
 
-    loaders = build_dataloaders(
-        data_root=Path(data_cfg["data_root"]),
-        cache_dir=Path(data_cfg["cache_dir"]),
-        pipeline=str(data_cfg["pipeline"]),
-        batch_size=int(data_cfg.get("batch_size", 32)),
-        num_workers=int(data_cfg.get("num_workers", 4)),
-        width=int(model_cfg.get("erp_width", 512)),
-        height=int(model_cfg.get("erp_height", 256)),
-        train_val_split=float(data_cfg.get("train_val_split", 0.8)),
-        seed=int(cfg.get("seed", 42)),
-    )
-
-    class_names: list[str] = loaders["test"].dataset.classes
+    class_names: list[str] = loaders["test"].dataset.categories
 
     # ------------------------------------------------------------------
     # Evaluate

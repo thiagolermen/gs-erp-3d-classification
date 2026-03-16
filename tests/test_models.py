@@ -8,8 +8,9 @@ Covers the verification checklist from the AI Architect agent spec (CLAUDE.md):
     - SWHDC adds exactly 0 extra trainable parameters vs a standard Conv2d
     - HSDCNet (ResNet-34 + HSDC) parameter count ≈ 5.3 M
     - SWHDCResNet (ResNet-50 + SWHDC) parameter count ≈ 25.5 M
-    - All backbones accept the correct input channel count (12 or 1)
+    - All backbones accept the correct input channel count (8 shells = default)
 
+Input: 8-channel radiance field ERP from 3D Gaussian Splat PLY files.
 All tests are pure-PyTorch and do NOT require a GPU or ModelNet data.
 """
 
@@ -265,36 +266,37 @@ class TestHSDCNet:
     """Shape, dtype, and approximate parameter-count checks for HSDCNet."""
 
     def test_output_shape_mn10(self) -> None:
-        """HSDCNet must map (B, 12, 256, 512) → (B, 10)."""
-        model = HSDCNet(in_channels=12, num_classes=10)
+        """HSDCNet must map (B, 8, 256, 512) → (B, 10) with 8-shell RF-ERP input."""
+        model = HSDCNet(in_channels=8, num_classes=10)
         model.eval()
         with torch.no_grad():
-            x = _rand((2, 12, 256, 512))
+            x = _rand((2, 8, 256, 512))
             y = model(x)
         assert y.shape == (2, 10)
 
     def test_output_shape_mn40(self) -> None:
-        model = HSDCNet(in_channels=12, num_classes=40)
+        model = HSDCNet(in_channels=8, num_classes=40)
         model.eval()
         with torch.no_grad():
-            y = model(_rand((1, 12, 256, 512)))
+            y = model(_rand((1, 8, 256, 512)))
         assert y.shape == (1, 40)
 
     def test_input_channel_count(self) -> None:
         """HSDCNet must reject inputs with wrong channel count."""
-        model = HSDCNet(in_channels=12, num_classes=10)
+        model = HSDCNet(in_channels=8, num_classes=10)
         model.eval()
         with pytest.raises(RuntimeError):
             with torch.no_grad():
-                model(_rand((1, 3, 256, 512)))   # wrong: 3 instead of 12
+                model(_rand((1, 3, 256, 512)))   # wrong: 3 instead of 8
 
     def test_param_count_approx_5_3m(self) -> None:
         """HSDCNet trainable parameters must be approximately 5.3 M.
 
         The original paper (HSDC §II-C, Table 1) reports 5.3 M parameters.
         We allow ±15% tolerance to account for minor implementation differences.
+        Note: in_channels=8 instead of 12 changes the stem slightly.
         """
-        model = HSDCNet(in_channels=12, num_classes=10)
+        model = HSDCNet(in_channels=8, num_classes=10)
         n_params = _count_params(model)
         target   = 5_300_000
         assert abs(n_params - target) / target < 0.15, (
@@ -302,10 +304,12 @@ class TestHSDCNet:
         )
 
     def test_output_dtype(self) -> None:
-        model = HSDCNet(in_channels=12, num_classes=10)
+        model = HSDCNet(in_channels=8, num_classes=10)
         model.eval()
         with torch.no_grad():
-            y = model(_rand((1, 12, 32, 64)))   # small input for speed
+            # Minimum valid size: layer4 output is H/32 × W/32; circular padding
+            # with dilation=4 requires W/32 > 4, so W >= 128.
+            y = model(_rand((1, 8, 128, 256)))
         assert y.dtype == torch.float32
 
 
@@ -317,28 +321,29 @@ class TestSWHDCResNet:
     """Shape and parameter-count checks for SWHDCResNet."""
 
     def test_output_shape_mn10(self) -> None:
-        """SWHDCResNet must map (B, 1, 256, 512) → (B, 10)."""
-        model = SWHDCResNet(in_channels=1, num_classes=10)
+        """SWHDCResNet must map (B, 8, 256, 512) → (B, 10) with 8-shell RF-ERP input."""
+        model = SWHDCResNet(in_channels=8, num_classes=10)
         model.eval()
         with torch.no_grad():
-            y = model(_rand((2, 1, 256, 512)))
+            y = model(_rand((2, 8, 256, 512)))
         assert y.shape == (2, 10)
 
     def test_input_channel_count(self) -> None:
         """SWHDCResNet must reject inputs with wrong channel count."""
-        model = SWHDCResNet(in_channels=1, num_classes=10)
+        model = SWHDCResNet(in_channels=8, num_classes=10)
         model.eval()
         with pytest.raises(RuntimeError):
             with torch.no_grad():
-                model(_rand((1, 3, 256, 512)))   # wrong: 3 instead of 1
+                model(_rand((1, 3, 256, 512)))   # wrong: 3 instead of 8
 
     def test_param_count_approx_25_5m(self) -> None:
         """SWHDCResNet trainable parameters must be approximately 25.5 M.
 
         SWHDC adds 0 extra parameters (weights are non-trainable buffers), so
         the count equals standard ResNet-50 (≈ 25.5 M).  We allow ±10%.
+        Note: in_channels=8 changes the stem conv slightly vs the original 1-ch.
         """
-        model = SWHDCResNet(in_channels=1, num_classes=10)
+        model = SWHDCResNet(in_channels=8, num_classes=10)
         n_params = _count_params(model)
         target   = 25_500_000
         assert abs(n_params - target) / target < 0.10, (
@@ -347,7 +352,7 @@ class TestSWHDCResNet:
 
     def test_swhdc_buffers_not_trainable(self) -> None:
         """SWHDC latitude weights must NOT appear in trainable parameters."""
-        model = SWHDCResNet(in_channels=1, num_classes=10)
+        model = SWHDCResNet(in_channels=8, num_classes=10)
         param_names = {name for name, _ in model.named_parameters()}
         swhdc_weight_params = [n for n in param_names if "swhdc_weights" in n]
         assert len(swhdc_weight_params) == 0, (

@@ -1,15 +1,22 @@
-# ResNet-34 + HSDC on ModelNet10 — baseline reproduction
+# ResNet-34 + HSDC on ModelNet10 — 3DGS radiance field ERP
 # Target: 97.1% top-1 accuracy (HSDC paper Table 2)
 # Reference: Stringhini et al., IEEE ICIP 2024, §III-A
+# Input: N_SHELLS-channel radiance field ERP from ModelSplat PLY files
 
 run_name: resnet34_hsdc_mn10_seed42
 seed: 42
 
 data:
   dataset: modelnet10
-  data_root: data/raw/modelnet10
-  cache_dir: data/processed/modelnet10/hsdc
-  pipeline: hsdc                 # 12-channel ERP
+  data_root: gs_data/modelsplat/modelsplat_ply
+  cache_dir: data/processed/modelnet10/radiance_field
+  pipeline: radiance_field          # EgoNeRF exponential shell ERP from 3DGS
+  n_shells: 8                        # number of concentric sphere shells
+  erp_width: 512
+  erp_height: 256
+  r_near_pct: 5                      # 5th percentile of r_dist for r_near
+  r_far_pct: 95                      # 95th percentile of r_dist for r_far
+  cutoff_sigma: 3.0                  # spatial culling threshold (in sigmas)
   num_workers: 4
   batch_size: 32
   train_val_split: 0.8
@@ -18,12 +25,13 @@ model:
   backbone: resnet34
   block: hsdc
   num_classes: 10
+  in_channels: 8                     # equals n_shells
   erp_width: 512
   erp_height: 256
   dropout: 0.0
 
 training:
-  max_epochs: 500                # HSDC paper §III-A
+  max_epochs: 500                    # HSDC paper §III-A
   optimizer: adam
   lr: 1.0e-4
   weight_decay: 0.0

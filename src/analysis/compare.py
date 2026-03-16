@@ -238,18 +238,14 @@ def _infer_labels(run_name: str) -> tuple[str, str]:
         backbone = "ResNet-34"
     elif "resnet50" in name or "resnet_50" in name:
         backbone = "ResNet-50"
-    elif "swin" in name:
-        backbone = "Swin-T"
-    elif "effnetv2" in name or "efficientnetv2" in name:
-        backbone = "EfficientNetV2-S"
     else:
         backbone = run_name
 
     block = "HSDC" if "hsdc" in name else ("SWHDC" if "swhdc" in name else "")
     method = f"{backbone} + {block}" if block else backbone
 
-    # Input label
-    input_desc = "12-ch ERP" if "hsdc" in name else ("1-ch depth ERP" if "swhdc" in name else "ERP")
+    # Input label — both pipelines now use radiance field ERP
+    input_desc = "8-shell RF-ERP"
 
     return method, input_desc
 

@@ -1,15 +1,19 @@
-"""Main training loop for ERP-ViT 3D Classification experiments.
+"""Main training loop for ERP 3D Classification experiments.
 
 Implements the training protocol from the HSDC and SWHDC papers:
 
-  - CrossEntropyLoss (with optional label smoothing for Transformer experiments)
-  - Adam / AdamW optimiser, StepLR or cosine-annealing LR scheduler
+  - CrossEntropyLoss
+  - Adam / AdamW optimiser, StepLR LR scheduler
   - Gradient clipping (max_norm = 1.0)
   - Mixed-precision training via torch.cuda.amp (CUDA only)
   - Early stopping with patience = 25 epochs
   - Per-epoch metrics logged to CSV and Python logging
   - Best and last checkpoints saved per run
   - Multi-GPU support via torch.nn.DataParallel
+
+Supported backbones:
+  - resnet34 + hsdc  → HSDCNet  (N_shells-channel radiance-field ERP input)
+  - resnet50 + swhdc → SWHDCResNet (N_shells-channel radiance-field ERP input)
 
 Entry point::
 
@@ -47,8 +51,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.models.backbones.resnet_hsdc import HSDCNet, SWHDCResNet
-from src.models.backbones.swin_hsdc import SwinHSDCNet
-from src.models.backbones.effnetv2_hsdc import EffNetV2HSDCNet
 from src.preprocessing.dataset import build_dataloaders
 from src.training.scheduler import EarlyStopping, build_optimizer, build_lr_scheduler
 
@@ -90,12 +92,11 @@ def build_model(cfg: dict) -> nn.Module:
 
     Supported ``backbone + block`` combinations:
 
-    - ``resnet34  + hsdc``   → :class:`HSDCNet` (12-channel input)
-    - ``resnet50  + swhdc``  → :class:`SWHDCResNet` (1-channel input)
-    - ``swin_t    + hsdc``   → :class:`SwinHSDCNet` (12-channel, pipeline='hsdc')
-    - ``swin_t    + swhdc``  → :class:`SwinHSDCNet` (1-channel, pipeline='swhdc')
-    - ``efficientnetv2_s + hsdc``  → :class:`EffNetV2HSDCNet` (12-channel)
-    - ``efficientnetv2_s + swhdc`` → :class:`EffNetV2HSDCNet` (1-channel)
+    - ``resnet34 + hsdc``  → :class:`HSDCNet`
+    - ``resnet50 + swhdc`` → :class:`SWHDCResNet`
+
+    The number of input channels is read from ``cfg['model']['in_channels']``
+    (default 8, matching the N_shells=8 cascading-sphere radiance-field ERP).
 
     All models are initialised from scratch — ``pretrained=False`` is a
     hard constraint for fair comparison with the papers (CLAUDE.md §Rules).
@@ -113,34 +114,17 @@ def build_model(cfg: dict) -> nn.Module:
     backbone    = str(model_cfg["backbone"]).lower()
     block       = str(model_cfg["block"]).lower()
     num_classes = int(model_cfg["num_classes"])
-    erp_height  = int(model_cfg.get("erp_height", 256))
+    in_channels = int(model_cfg.get("in_channels", 8))
 
     if backbone == "resnet34" and block == "hsdc":
-        return HSDCNet(in_channels=12, num_classes=num_classes)
+        return HSDCNet(in_channels=in_channels, num_classes=num_classes)
 
     if backbone == "resnet50" and block == "swhdc":
-        return SWHDCResNet(in_channels=1, num_classes=num_classes)
-
-    if backbone == "swin_t":
-        return SwinHSDCNet(
-            pipeline=block,
-            num_classes=num_classes,
-            erp_height=erp_height,
-            pretrained=False,
-        )
-
-    if backbone == "efficientnetv2_s":
-        return EffNetV2HSDCNet(
-            pipeline=block,
-            num_classes=num_classes,
-            erp_height=erp_height,
-            pretrained=False,
-        )
+        return SWHDCResNet(in_channels=in_channels, num_classes=num_classes)
 
     raise ValueError(
         f"Unsupported backbone+block combination: '{backbone}' + '{block}'. "
-        "Valid options: resnet34+hsdc, resnet50+swhdc, "
-        "swin_t+hsdc, swin_t+swhdc, efficientnetv2_s+hsdc, efficientnetv2_s+swhdc."
+        "Valid options: resnet34+hsdc, resnet50+swhdc."
     )
 
 
@@ -446,20 +430,7 @@ def run_training(config_path: Path) -> dict[str, Any]:
     # ------------------------------------------------------------------
     # 5. Data
     # ------------------------------------------------------------------
-    data_cfg = cfg["data"]
-    model_cfg = cfg["model"]
-
-    loaders = build_dataloaders(
-        data_root=Path(data_cfg["data_root"]),
-        cache_dir=Path(data_cfg["cache_dir"]),
-        pipeline=str(data_cfg["pipeline"]),
-        batch_size=int(data_cfg.get("batch_size", 32)),
-        num_workers=int(data_cfg.get("num_workers", 4)),
-        width=int(model_cfg.get("erp_width", 512)),
-        height=int(model_cfg.get("erp_height", 256)),
-        train_val_split=float(data_cfg.get("train_val_split", 0.8)),
-        seed=seed,
-    )
+    loaders = build_dataloaders(cfg)
     logger.info(
         "Splits    : train=%d  val=%d  test=%d",
         len(loaders["train"].dataset),

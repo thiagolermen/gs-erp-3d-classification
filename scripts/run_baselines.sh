@@ -8,11 +8,16 @@
 # Or from the host via make:
 #   make baselines-all
 #
-# Baseline targets (from ai-developer.md):
-#   1. ResNet-34 + HSDC  on ModelNet10  → target 97.1%
-#   2. ResNet-34 + HSDC  on ModelNet40  → target 93.9%
-#   3. ResNet-50 + SWHDC on ModelNet10  → target 94.11%
-#   4. ResNet-50 + SWHDC on ModelNet40  → target 91.89%
+# Pipeline: 3DGS ModelSplat PLY -> 8-shell Radiance Field ERP -> HSDC/SWHDC
+#
+# Experiments:
+#   1. ResNet-34 + HSDC  on ModelNet10  (reference target: 97.1%)
+#   2. ResNet-34 + HSDC  on ModelNet40  (reference target: 93.9%)
+#   3. ResNet-50 + SWHDC on ModelNet10  (reference target: 94.11%)
+#   4. ResNet-50 + SWHDC on ModelNet40  (reference target: 91.89%)
+#
+# NOTE: Targets above were achieved with geometric ray-cast ERP (original
+#       papers). Results with radiance field ERP may differ.
 #
 # Outputs written to experiments/<run_name>/ (logs, checkpoints, metrics.csv).
 # =============================================================================

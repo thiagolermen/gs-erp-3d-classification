@@ -1,15 +1,22 @@
-# ResNet-50 + SWHDC on ModelNet40 — baseline reproduction
+# ResNet-50 + SWHDC on ModelNet40 — 3DGS radiance field ERP
 # Target: 91.89% top-1 accuracy (SWHDC paper Table III)
 # Reference: Stringhini et al., SIBGRAPI 2024, §IV-A
+# Input: N_SHELLS-channel radiance field ERP from ModelSplat PLY files
 
 run_name: resnet50_swhdc_mn40_seed42
 seed: 42
 
 data:
   dataset: modelnet40
-  data_root: data/raw/modelnet40
-  cache_dir: data/processed/modelnet40/swhdc
-  pipeline: swhdc                # 1-channel depth ERP
+  data_root: gs_data/modelsplat/modelsplat_ply
+  cache_dir: data/processed/modelnet40/radiance_field
+  pipeline: radiance_field          # EgoNeRF exponential shell ERP from 3DGS
+  n_shells: 8                        # number of concentric sphere shells
+  erp_width: 512
+  erp_height: 256
+  r_near_pct: 5
+  r_far_pct: 95
+  cutoff_sigma: 3.0
   num_workers: 4
   batch_size: 32
   train_val_split: 0.8
@@ -18,12 +25,13 @@ model:
   backbone: resnet50
   block: swhdc
   num_classes: 40
+  in_channels: 8                     # equals n_shells
   erp_width: 512
   erp_height: 256
   dropout: 0.0
 
 training:
-  max_epochs: 200                # SWHDC paper §IV-A
+  max_epochs: 200                    # SWHDC paper §IV-A
   optimizer: adam
   lr: 1.0e-4
   weight_decay: 0.0

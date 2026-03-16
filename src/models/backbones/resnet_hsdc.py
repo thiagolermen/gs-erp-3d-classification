@@ -1,14 +1,18 @@
 """
 ResNet-34 + HSDC (HSDCNet) and ResNet-50 + SWHDC baseline architectures.
 
+Both models accept an (N_shells, H, W) radiance-field ERP as input, where
+N_shells is configurable (default 8, matching the cascading-sphere ERP
+pipeline).  N_shells=12 reproduces the original HSDC 12-channel setting;
+N_shells=1 reproduces the original SWHDC single-channel depth setting.
+
 HSDCNet (HSDC paper §II-C, Table 1)
 ------------------------------------
 ResNet-34 with every 3×3 convolutional layer replaced by an HSDCBlock.
-The 7×7 stem conv is also replaced by an HSDCBlock.  Input channels are
-adapted to 12 (HSDC ERP) instead of the standard 3 (RGB).
+The 7×7 stem conv is also replaced by an HSDCBlock.
 
 Architecture (Table 1):
-    Conv 1  : 1× HSDCBlock(12→64, 7×7, stride=2) + MaxPool(3, s=2)
+    Conv 1  : 1× HSDCBlock(in_channels→64, 7×7, stride=2) + MaxPool(3, s=2)
     Conv 2–5: residual stages with HSDCBasicBlock, matching ResNet-34 depths
               [3, 4, 6, 3] blocks and channel widths [64, 128, 256, 512].
     Head    : GlobalAvgPool → Linear(512, num_classes)
@@ -20,8 +24,6 @@ SWHDCBlock.  The 1×1 reduction and expansion convolutions are left unchanged
 (SWHDC requires in_channels == out_channels, which is satisfied by all 3×3
 convs in the bottleneck mid-layer).  This replacement adds ZERO extra
 parameters; total parameter count matches standard ResNet-50 (≈25.5 M).
-
-Input channels: 1 (SWHDC single-channel depth ERP).
 
 References:
     HSDC paper §II-C, Table 1 — Stringhini et al., IEEE ICIP 2024
@@ -96,10 +98,12 @@ class HSDCNet(nn.Module):
     convolutions).
 
     Args:
-        in_channels:  ERP input channels (12 for HSDC pipeline, default 12).
+        in_channels:  Number of input ERP channels.  Default 8 corresponds to
+                      the N_shells=8 cascading-sphere radiance-field ERP.
+                      Use 12 to reproduce the original HSDC paper setting.
         num_classes:  Number of output classes (10 for MN10, 40 for MN40).
 
-    Input:   ``(B, 12, 256, 512)``
+    Input:   ``(B, in_channels, 256, 512)``
     Output:  ``(B, num_classes)`` logits
 
     References:
@@ -109,11 +113,11 @@ class HSDCNet(nn.Module):
     # ResNet-34 block counts per stage — HSDC paper Table 1
     _LAYERS: tuple[int, ...] = (3, 4, 6, 3)
 
-    def __init__(self, in_channels: int = 12, num_classes: int = 10) -> None:
+    def __init__(self, in_channels: int = 8, num_classes: int = 10) -> None:
         super().__init__()
 
         # Conv 1: 1× HSDC block (7×7, 64 out-channels) — Table 1
-        # stride=2 halves spatial size: (B, 12, 256, 512) → (B, 64, 128, 256)
+        # stride=2 halves spatial size: (B, in_channels, 256, 512) → (B, 64, 128, 256)
         self.stem = nn.Sequential(
             HSDCBlock(in_channels, 64, kernel_size=7, stride=2, activate=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
@@ -259,10 +263,12 @@ class SWHDCResNet(nn.Module):
     parameters, total model size matches standard ResNet-50 (≈ 25.5 M params).
 
     Args:
-        in_channels:  ERP input channels (1 for SWHDC depth pipeline).
+        in_channels:  Number of input ERP channels.  Default 8 corresponds to
+                      the N_shells=8 cascading-sphere radiance-field ERP.
+                      Use 1 to reproduce the original SWHDC paper setting.
         num_classes:  Number of output classes.
 
-    Input:   ``(B, 1, 256, 512)``
+    Input:   ``(B, in_channels, 256, 512)``
     Output:  ``(B, num_classes)`` logits
 
     References:
@@ -278,11 +284,11 @@ class SWHDCResNet(nn.Module):
     )
     _DEPTHS: tuple[int, ...] = (3, 4, 6, 3)
 
-    def __init__(self, in_channels: int = 1, num_classes: int = 10) -> None:
+    def __init__(self, in_channels: int = 8, num_classes: int = 10) -> None:
         super().__init__()
 
         # Standard ResNet-50 stem (7×7 conv, BN, ReLU, MaxPool)
-        # stride=2 twice: (B, 1, 256, 512) → (B, 64, 64, 128)
+        # stride=2 twice: (B, in_channels, 256, 512) → (B, 64, 64, 128)
         self.stem = nn.Sequential(
             nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False),
             nn.BatchNorm2d(64),

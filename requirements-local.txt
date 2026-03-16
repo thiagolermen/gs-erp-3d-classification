@@ -2,8 +2,8 @@
 # Local machine — CPU-only requirements
 # =============================================================================
 # Use this file on your local machine (no GPU) for:
-#   - ERP data preprocessing  (scripts/preprocess_dataset.py)
-#   - Jupyter notebook exploration  (notebooks/)
+#   - 3DGS PLY exploration and radiance field ERP generation  (notebooks/)
+#   - Jupyter notebook visualization
 #
 # Training and evaluation must be done on the lab machine via Docker (GPU).
 #
@@ -33,16 +33,15 @@
 numpy>=1.26.0
 scipy>=1.13.0
 
-# --- 3D mesh loading (ray-casting and ERP generation) ---
-trimesh>=4.3.0
-rtree>=1.2.0          # spatial index used by trimesh for ray-mesh intersection
+# --- HuggingFace Hub (ModelSplat dataset download) ---
+huggingface_hub>=0.23.0
 
 # --- Data utilities ---
 pandas>=2.2.0
 tqdm>=4.66.0
 PyYAML>=6.0.1
 
-# --- Visualization (for notebooks and ERP sample inspection) ---
+# --- Visualization (for notebooks) ---
 matplotlib>=3.9.0
 seaborn>=0.13.2
 scikit-learn>=1.5.0

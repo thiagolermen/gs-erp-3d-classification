@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
-name = "erp-vit-3d-classification"
+name = "gs-erp-3d-classification"
 version = "0.1.0"
-description = "ERP-based 3D object classification with HSDC/SWHDC blocks and Vision Transformer backbones (UFRGS TCC)"
+description = "3D Gaussian Splatting radiance field ERP for 3D object classification with HSDC/SWHDC blocks (UFRGS TCC)"
 requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]

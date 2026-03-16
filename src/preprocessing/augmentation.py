@@ -1,9 +1,14 @@
 """
-Data augmentation for ERP images in the HSDC and SWHDC pipelines.
+Data augmentation for ERP images in the 3DGS radiance field pipeline.
 
 All three augmentation primitives are applied independently to each training
 sample with a default probability of 15%.  Augmentation is NEVER applied to
 validation or test data.
+
+The module operates on (C, H, W) float32 numpy arrays and is agnostic to the
+number of channels C.  It is therefore compatible with both:
+  - The original HSDC/SWHDC pipelines (C=12 or C=1 from mesh ray-casting).
+  - The new radiance field pipeline (C=N_shells from 3D Gaussian Splats).
 
 Augmentation primitives (HSDC paper §III-A / SWHDC paper §IV-A):
     1. 3D rotation: rotation angles uniformly sampled from
@@ -21,6 +26,7 @@ Augmentation primitives (HSDC paper §III-A / SWHDC paper §IV-A):
 References:
     HSDC paper §III-A — Stringhini et al., IEEE ICIP 2024
     SWHDC paper §IV-A — Stringhini et al., SIBGRAPI 2024
+    EgoNeRF pipeline — Choi et al., CVPR 2023 (new 3DGS data source)
 """
 
 from __future__ import annotations
@@ -42,6 +48,8 @@ def rotate_erp_3d(
 ) -> np.ndarray:
     """Apply a 3-D rotation to an ERP image by spherical remapping.
 
+    Works for any number of channels C in the input (C, H, W) array.
+
     For every output pixel (x_out, y_out):
       1. Compute the corresponding 3-D unit direction d_out using the
          spherical camera model (HSDC Eq. 1).
@@ -54,7 +62,7 @@ def rotate_erp_3d(
     axis uses nearest-neighbour boundary clamping.
 
     Args:
-        erp:           (C, H, W) float32 — input ERP image.
+        erp:           (C, H, W) float32 — input ERP image, any C ≥ 1.
         angle_x_deg:   Rotation around x-axis in degrees, ∈ [0, 15].
         angle_y_deg:   Rotation around y-axis in degrees, ∈ [0, 15].
         angle_z_deg:   Rotation around z-axis in degrees, ∈ [0, 45].
@@ -109,6 +117,7 @@ def rotate_erp_3d(
     y_src = np.clip(y_src, 0.0, H - 1.0)
 
     # Bilinear interpolation for each channel (scipy map_coordinates order=1)
+    # Channel count C is not hardcoded — works for any C ≥ 1
     rotated = np.empty_like(erp)
     for c in range(C):
         rotated[c] = map_coordinates(
@@ -129,16 +138,18 @@ def rotate_erp_3d(
 def gaussian_blur_erp(erp: np.ndarray, sigma: float) -> np.ndarray:
     """Apply Gaussian blur to each channel of an ERP image.
 
+    Works for any number of channels C in the input (C, H, W) array.
     σ is sampled uniformly from [0.1, 2.0] during training
     (HSDC paper §III-A / SWHDC paper §IV-A).
 
     Args:
-        erp:   (C, H, W) float32 — input ERP image.
+        erp:   (C, H, W) float32 — input ERP image, any C ≥ 1.
         sigma: Gaussian standard deviation, ∈ [0.1, 2.0].
 
     Returns:
         blurred: (C, H, W) float32.
     """
+    # Channel count C is not hardcoded — iterate over erp.shape[0]
     blurred = np.empty_like(erp)
     for c in range(erp.shape[0]):
         blurred[c] = gaussian_filter(erp[c].astype(np.float64), sigma=sigma).astype(
@@ -159,10 +170,11 @@ def gaussian_noise_erp(
 ) -> np.ndarray:
     """Add Gaussian noise to each channel of an ERP image.
 
+    Works for any number of channels C in the input (C, H, W) array.
     mean ∈ [0, 0.001] and σ ∈ [0, 0.03] (HSDC paper §III-A / SWHDC §IV-A).
 
     Args:
-        erp:  (C, H, W) float32 — input ERP image.
+        erp:  (C, H, W) float32 — input ERP image, any C ≥ 1.
         mean: Noise mean.
         std:  Noise standard deviation.
         rng:  Optional numpy random Generator for reproducibility.
@@ -172,6 +184,7 @@ def gaussian_noise_erp(
     """
     if rng is None:
         rng = np.random.default_rng()
+    # erp.shape is (C, H, W) — no channel count hardcoded
     noise = rng.normal(loc=mean, scale=std, size=erp.shape).astype(np.float32)
     return erp + noise
 
@@ -188,6 +201,10 @@ def augment(
     """Apply all three augmentation primitives independently.
 
     Each primitive fires independently with probability *prob* (default 0.15).
+    The input may have any number of channels C ≥ 1 — the function is
+    agnostic to C and works for the 3DGS N-shell ERP as well as the
+    original 12-channel or 1-channel mesh-based ERPs.
+
     The augmentation protocol is identical in both papers (HSDC §III-A /
     SWHDC §IV-A).
 
@@ -197,7 +214,7 @@ def augment(
         Noise     mean: [0, 0.001]  σ: [0, 0.03]
 
     Args:
-        erp:  (C, H, W) float32 — ERP image (HSDC or SWHDC).
+        erp:  (C, H, W) float32 — ERP image, any C ≥ 1.
         prob: Probability of each primitive being applied (default 0.15).
         rng:  Optional numpy random Generator for reproducibility.
 

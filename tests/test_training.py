@@ -449,12 +449,13 @@ class TestBuildModel:
             build_model(cfg)
 
     def test_resnet34_hsdc_forward(self) -> None:
-        """HSDCNet must accept (2, 12, 64, 128) and return (2, 10)."""
+        """HSDCNet must accept (2, 8, 64, 128) and return (2, 10) (8-shell RF-ERP)."""
         cfg = {
             "model": {
                 "backbone": "resnet34",
                 "block": "hsdc",
                 "num_classes": 10,
+                "in_channels": 8,
                 "erp_height": 64,
                 "erp_width": 128,
             },
@@ -463,16 +464,17 @@ class TestBuildModel:
         model = build_model(cfg)
         model.eval()
         with torch.no_grad():
-            y = model(torch.randn(2, 12, 64, 128))
+            y = model(torch.randn(2, 8, 64, 128))
         assert y.shape == (2, 10)
 
     def test_resnet50_swhdc_forward(self) -> None:
-        """SWHDCResNet must accept (2, 1, 64, 128) and return (2, 10)."""
+        """SWHDCResNet must accept (2, 8, 64, 128) and return (2, 10) (8-shell RF-ERP)."""
         cfg = {
             "model": {
                 "backbone": "resnet50",
                 "block": "swhdc",
                 "num_classes": 10,
+                "in_channels": 8,
                 "erp_height": 64,
                 "erp_width": 128,
             },
@@ -481,5 +483,5 @@ class TestBuildModel:
         model = build_model(cfg)
         model.eval()
         with torch.no_grad():
-            y = model(torch.randn(2, 1, 64, 128))
+            y = model(torch.randn(2, 8, 64, 128))
         assert y.shape == (2, 10)
