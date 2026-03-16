@@ -2,20 +2,23 @@
 
 > **Split workflow:**
 > - **Local machine** — data download, preprocessing, notebooks (Python venv, CPU)
-> - **Lab machine** — training and evaluation (Docker, GPU)
+> - **Lab machine (`lermen@anubis`)** — training and evaluation (Docker, GPU)
+>
+> Lab machine specs: Ubuntu 22.04.1 LTS (Linux 6.8.0-101-generic x86_64), Docker 26.0.0
 
 ---
 
 ## Prerequisites (lab machine, one-time)
 
-1. **Docker** ≥ 24.0 + Compose plugin
-2. **NVIDIA Container Toolkit**:
-   ```bash
-   sudo apt-get install -y nvidia-container-toolkit
-   sudo nvidia-ctk runtime configure --runtime=docker
-   sudo systemctl restart docker
-   ```
-3. **NVIDIA driver** ≥ 525.60 (for CUDA 12.1)
+Docker 26.0.0 is already installed on `anubis`. Only the NVIDIA Container Toolkit needs to be configured if not done yet:
+
+```bash
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+NVIDIA driver requirement: ≥ 525.60 (for CUDA 12.1).
 
 Verify GPU access:
 ```bash
@@ -24,11 +27,11 @@ docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 
 ---
 
-## First-time Setup
+## First-time Setup on anubis
 
 ```bash
-# 1. Clone the repo
-git clone git@github.com:thiagolermen/gs-erp-3d-classification.git
+# 1. Clone the repo (already done at ~/DEV_ENV/gs-erp-3d-classification)
+git clone https://github.com/thiagolermen/gs-erp-3d-classification.git
 cd gs-erp-3d-classification
 
 # 2. Build the Docker image
@@ -58,13 +61,18 @@ python scripts/download_modelsplat.py --token <HF_TOKEN> --mn10-only
 # Generate ERP cache (~8-shell, 512×256, stored in data/processed/)
 bash scripts/preprocess_all.sh
 
-# Transfer cache to lab machine
-rsync -avz data/processed/ user@lab-machine:~/gs-erp-3d-classification/data/processed/
+# Transfer cache to anubis
+rsync -avz data/processed/ lermen@anubis:~/DEV_ENV/gs-erp-3d-classification/data/processed/
 ```
 
-### Lab machine — train
+### Lab machine (anubis) — train
 
 ```bash
+# SSH into anubis
+ssh lermen@anubis
+
+cd ~/DEV_ENV/gs-erp-3d-classification
+
 # Open a tmux session so training survives SSH disconnects
 tmux new-session -s training
 
@@ -124,13 +132,13 @@ export PYTHONPATH=$(pwd)
 ## Jupyter (optional, remote access)
 
 ```bash
-# Lab machine
+# Lab machine (anubis)
 make jupyter
 
 # Home machine — open SSH tunnel
-ssh -L 8888:localhost:8888 -N user@lab-machine
+ssh -L 8888:localhost:8888 -N lermen@anubis
 
-# Browser: http://localhost:8888
+# Browser: http://localhost:8888   token: erp-vit
 ```
 
 ---

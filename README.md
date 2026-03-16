@@ -249,12 +249,14 @@ gs-erp-3d-classification/
 ## Lab Machine Setup (Docker — training and evaluation)
 
 > Full guide: [`docs/DOCKER_SETUP.md`](docs/DOCKER_SETUP.md)
+>
+> Lab machine: `lermen@anubis` — Ubuntu 22.04.1 LTS, Docker 26.0.0
 
 ```bash
-# 1. Clone and transfer data
-git clone git@github.com:thiagolermen/gs-erp-3d-classification.git
+# 1. Clone and transfer data (already done on anubis)
+git clone https://github.com/thiagolermen/gs-erp-3d-classification.git
 cd gs-erp-3d-classification
-rsync -avz data/processed/ user@lab-machine:~/gs-erp-3d-classification/data/processed/
+rsync -avz data/processed/ lermen@anubis:~/DEV_ENV/gs-erp-3d-classification/data/processed/
 
 # 2. Build and verify GPU
 make build

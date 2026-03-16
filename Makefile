@@ -186,7 +186,7 @@ endif
 .PHONY: jupyter
 jupyter:
 	@echo "Jupyter starting on port 8888"
-	@echo "SSH tunnel: ssh -L 8888:localhost:8888 user@lab"
+	@echo "SSH tunnel: ssh -L 8888:localhost:8888 lermen@anubis"
 	@echo "Browser:    http://localhost:8888   token: erp-vit"
 	$(COMPOSE) run --rm -p 8888:8888 $(SVC) \
 		jupyter notebook \

@@ -107,7 +107,7 @@ RUN mkdir -p /workspace/gs_data \
 #   - Allow root (the container runs as root by default)
 #
 # Access from home via SSH tunnel:
-#   ssh -L 8888:localhost:8888 user@lab-machine
+#   ssh -L 8888:localhost:8888 lermen@anubis
 #   # then open http://localhost:8888 with token 'erp-vit'
 # =============================================================================
 RUN jupyter server --generate-config 2>/dev/null || \

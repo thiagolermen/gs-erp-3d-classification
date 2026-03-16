@@ -66,7 +66,7 @@ services:
       - OMP_NUM_THREADS=4
       - TOKENIZERS_PARALLELISM=false
 
-    # Jupyter port — access via SSH tunnel: ssh -L 8888:localhost:8888 user@lab
+    # Jupyter port — access via SSH tunnel: ssh -L 8888:localhost:8888 lermen@anubis
     ports:
       - "8888:8888"
 
