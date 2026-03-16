@@ -5,6 +5,8 @@
 # Base:  PyTorch 2.2.0 + CUDA 12.1 + cuDNN 8 (runtime)
 # Host requirements:
 #   - NVIDIA driver >= 525.60.13  (for CUDA 12.1)
+#   - Lab GPU: NVIDIA GeForce RTX 2070 (8 GB VRAM), driver 560.35.03 (CUDA 12.6 capable)
+#     CUDA 12.1 image is fully compatible with driver 560.35.03
 #   - nvidia-container-toolkit installed and configured
 #
 # Build:

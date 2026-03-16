@@ -5,12 +5,13 @@
 > - **Lab machine (`lermen@anubis`)** — training and evaluation (Docker, GPU)
 >
 > Lab machine specs: Ubuntu 22.04.1 LTS (Linux 6.8.0-101-generic x86_64), Docker 26.0.0
+> GPU: NVIDIA GeForce RTX 2070 — 8 GB VRAM, driver 560.35.03, CUDA 12.6 capable
 
 ---
 
 ## Prerequisites (lab machine, one-time)
 
-Docker 26.0.0 is already installed on `anubis`. Only the NVIDIA Container Toolkit needs to be configured if not done yet:
+Docker 26.0.0 is already installed on `anubis`. Driver 560.35.03 supports up to CUDA 12.6 and is fully compatible with the CUDA 12.1 container image. Only the NVIDIA Container Toolkit needs to be configured if not done yet:
 
 ```bash
 sudo apt-get install -y nvidia-container-toolkit
@@ -18,11 +19,10 @@ sudo nvidia-ctk runtime configure --runtime=docker
 sudo systemctl restart docker
 ```
 
-NVIDIA driver requirement: ≥ 525.60 (for CUDA 12.1).
-
 Verify GPU access:
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
+# Expected: RTX 2070 listed, CUDA Version 12.6
 ```
 
 ---
@@ -43,34 +43,121 @@ make check-gpu
 
 ---
 
-## Workflow
+## Data Preprocessing (inside Docker on anubis)
 
-### Local machine — preprocess and cache ERPs
+The full preprocessing pipeline runs inside the container. It has three stages:
+
+```
+HuggingFace  →  .zip download  →  extract PLY files  →  radiance field ERP cache (.npy)
+```
+
+### Stage 1 — Download the ModelSplat dataset
+
+The ModelSplat dataset (ShapeSplats/ModelNet_Splats) provides pre-trained 3DGS `.ply` files for every ModelNet object. A HuggingFace access token is required.
 
 ```bash
-# Install deps (CPU-only PyTorch)
-python -m venv .venv && source .venv/bin/activate
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements-local.txt
-pip install -e . --no-deps
+# ModelNet10 only (~15 GB — recommended for initial runs)
+make download TOKEN=<HF_TOKEN> MN10_ONLY=1
 
-# Download ModelSplat (requires HuggingFace token)
-python scripts/download_modelsplat.py --token <HF_TOKEN> --mn10-only
-# Full MN40: python scripts/download_modelsplat.py --token <HF_TOKEN>
-
-# Generate ERP cache (~8-shell, 512×256, stored in data/processed/)
-bash scripts/preprocess_all.sh
-
-# Transfer cache to anubis
-rsync -avz data/processed/ lermen@anubis:~/DEV_ENV/gs-erp-3d-classification/data/processed/
+# Full ModelNet40 (~40 GB)
+make download TOKEN=<HF_TOKEN>
 ```
+
+The script downloads per-category zip files, extracts them, and prints a summary. Extracted PLY files land at:
+
+```
+gs_data/modelsplat/modelsplat_ply/<category>/train|test/<id>/point_cloud.ply
+```
+
+Already-downloaded or already-extracted entries are skipped automatically, so the command is safe to re-run after an interruption.
+
+You can also download specific categories:
+
+```bash
+make shell
+# inside the container:
+python scripts/download_modelsplat.py --token <HF_TOKEN> --categories sofa chair table
+```
+
+### Stage 2 — (No mesh generation needed)
+
+The ModelSplat dataset ships with pre-trained 3DGS `.ply` files — there is no intermediate mesh or PLY generation step. The downloaded `point_cloud.ply` files are the 3D Gaussian Splat representations used directly in Stage 3.
+
+### Stage 3 — Generate the radiance field ERP cache
+
+This step reads each `point_cloud.ply`, places a virtual camera at the opacity-weighted centroid, samples the radiance field at 8 concentric spherical shells (EgoNeRF exponential spacing), and writes an `(8, 256, 512)` float32 `.npy` file to `data/processed/`.
+
+```bash
+# Preprocess ModelNet10 (recommended first)
+make preprocess DATASET=mn10
+
+# Preprocess ModelNet40
+make preprocess DATASET=mn40
+
+# Both in sequence
+make preprocess DATASET=all
+```
+
+Or run manually inside the container for full control:
+
+```bash
+make shell
+# inside the container:
+python -m src.preprocessing.dataset \
+    --data_root  gs_data/modelsplat/modelsplat_ply \
+    --cache_dir  data/processed/modelnet10/radiance_field \
+    --pipeline   radiance_field \
+    --dataset    modelnet10 \
+    --n_shells   8 \
+    --erp_height 256 \
+    --erp_width  512
+```
+
+Cache outputs:
+
+```
+data/processed/
+├── modelnet10/radiance_field/<category>/train|test/<id>.npy   # shape (8, 256, 512)
+└── modelnet40/radiance_field/<category>/train|test/<id>.npy
+```
+
+Existing `.npy` files are skipped, so preprocessing can be safely resumed after interruption.
+
+> **Tip:** Run preprocessing inside a `tmux` session — it can take several hours for MN40:
+> ```bash
+> tmux new-session -s preprocess
+> make preprocess DATASET=all
+> # Ctrl+B, D to detach; tmux attach -t preprocess to reattach
+> ```
+
+### Full pipeline (all-in-one)
+
+```bash
+# 1. Enter a persistent tmux session
+tmux new-session -s pipeline
+
+# 2. Download MN10 PLY files
+make download TOKEN=<HF_TOKEN> MN10_ONLY=1
+
+# 3. Generate ERP cache for MN10
+make preprocess DATASET=mn10
+
+# 4. Verify a sample ERP was written
+ls data/processed/modelnet10/radiance_field/
+
+# 5. Proceed to training
+make train CONFIG=configs/resnet34_hsdc_mn10.yaml
+```
+
+---
+
+## Workflow
 
 ### Lab machine (anubis) — train
 
 ```bash
 # SSH into anubis
 ssh lermen@anubis
-
 cd ~/DEV_ENV/gs-erp-3d-classification
 
 # Open a tmux session so training survives SSH disconnects
@@ -81,8 +168,7 @@ make baselines-all
 # or individually:
 make train CONFIG=configs/resnet34_hsdc_mn10.yaml
 
-# Detach: Ctrl+B, D
-# Reattach later: tmux attach -t training
+# Detach: Ctrl+B, D   |   Reattach: tmux attach -t training
 ```
 
 ### Evaluate
@@ -120,7 +206,11 @@ sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart doc
 shm_size: '32g'
 ```
 
-**`CUDA out of memory`** — reduce `batch_size` in the YAML config.
+**`CUDA out of memory`** — The RTX 2070 has 8 GB VRAM. All configs use `mixed_precision: true` and `batch_size: 32`, which fits comfortably for ResNet-34+HSDC (~5.3 M params). ResNet-50+SWHDC (~25.5 M params) may be tighter; if OOM occurs reduce `batch_size` to 16 in the YAML config:
+```yaml
+data:
+  batch_size: 16
+```
 
 **`ModuleNotFoundError: No module named 'src'`** — outside Docker, set:
 ```bash
