@@ -42,8 +42,15 @@ References:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
+
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
 
 from src.preprocessing.ply_loader import load_gaussian_ply
 
@@ -309,7 +316,8 @@ def compute_radiance_field_erp(
     H: int,
     W: int,
     cutoff_sigma: float = 3.0,
-    batch_size: int = 128,
+    batch_size: int = 4096,
+    device: Optional[str] = None,
 ) -> np.ndarray:
     """Evaluate the 3DGS radiance field at N concentric sphere shells.
 
@@ -328,96 +336,176 @@ def compute_radiance_field_erp(
 
         |r_dist[i] - r_s| < cutoff_sigma * max_scale[i]
 
-    This is equivalent to only considering Gaussians whose extent (at
-    cutoff_sigma standard deviations) overlaps with shell radius r_s.
-
-    Computation is batched over Gaussians (dim 0) in blocks of *batch_size*
-    to bound peak memory usage.
+    Algorithm (pixel-chunk tiling):
+        For each pixel chunk P, precompute A[i,p,k] = Rt_scaled[i,k,:] · dirs[p,:]
+        once and reuse it for all N_shells iterations — only the scaling by r_s
+        and the per-Gaussian offset b[i] = Rt_scaled[i] @ (xyz[i] - centroid)
+        change between shells.  This reduces memory allocation by ~(N_shells × B)
+        compared to the Gaussian-batch formulation and enables GPU acceleration.
 
     Args:
         gs_precomp:  Dict from precompute_gaussian_params.
         centroid:    (3,) float64 — object centroid.
-        ray_dirs:    (H*W, 3) float32 — unit ray directions (from build_ray_directions).
-        shell_radii: (N_shells,) float32 — shell radii (from compute_shell_radii).
+        ray_dirs:    (H*W, 3) float32 — unit ray directions.
+        shell_radii: (N_shells,) float32 — shell radii.
         H:           ERP height.
         W:           ERP width.
         cutoff_sigma: Truncation radius in units of max_scale (default 3.0).
-        batch_size:  Number of Gaussians per processing batch (default 128).
+        batch_size:  Pixels per processing chunk (default 4096).
+        device:      Torch device string ('cuda', 'cpu') or None for auto-detect.
+                     When None, CUDA is used if available, else CPU numpy.
 
     Returns:
         erp: (N_shells, H, W) float32 — raw accumulated density per shell.
-             Values are NOT normalised; the Dataset handles normalisation.
     """
-    xyz = gs_precomp["xyz"]               # (N, 3) float32
-    opacity = gs_precomp["opacity"]        # (N,) float32
-    Rt_scaled = gs_precomp["Rt_scaled"]   # (N, 3, 3) float32
-    r_dist = gs_precomp["r_dist"]         # (N,) float32
-    max_scale = gs_precomp["max_scale"]   # (N,) float32
+    # ── resolve device ───────────────────────────────────────────────────────
+    use_torch = _TORCH_AVAILABLE
+    if use_torch:
+        if device is None:
+            import torch as _torch
+            dev = _torch.device("cuda" if _torch.cuda.is_available() else "cpu")
+        else:
+            import torch as _torch
+            dev = _torch.device(device)
+        use_torch = True
+    else:
+        dev = None
 
-    n_shells = len(shell_radii)
+    if use_torch:
+        return _compute_erp_torch(
+            gs_precomp, centroid, ray_dirs, shell_radii,
+            H, W, cutoff_sigma, batch_size, dev,
+        )
+    return _compute_erp_numpy(
+        gs_precomp, centroid, ray_dirs, shell_radii,
+        H, W, cutoff_sigma, batch_size,
+    )
+
+
+def _compute_erp_numpy(
+    gs_precomp: dict,
+    centroid: np.ndarray,
+    ray_dirs: np.ndarray,
+    shell_radii: np.ndarray,
+    H: int,
+    W: int,
+    cutoff_sigma: float,
+    batch_size: int,
+) -> np.ndarray:
+    """CPU numpy implementation — pixel-chunk tiling."""
+    xyz       = gs_precomp["xyz"]        # (N, 3)
+    opacity   = gs_precomp["opacity"]    # (N,)
+    Rt_scaled = gs_precomp["Rt_scaled"]  # (N, 3, 3)
+    r_dist    = gs_precomp["r_dist"]     # (N,)
+    max_scale = gs_precomp["max_scale"]  # (N,)
+
     n_pixels = H * W
+    cutoff2  = float(cutoff_sigma ** 2)
     centroid_f32 = centroid.astype(np.float32)
 
-    # Output accumulator — use float64 for numerical stability, cast at end
-    erp_acc = np.zeros((n_shells, n_pixels), dtype=np.float64)
+    # Pre-compute b[i] = Rt_scaled[i] @ (xyz[i] - centroid) — once per sample.
+    # b[i,k] is the Gaussian mean in its own scaled local frame.
+    delta = xyz - centroid_f32                             # (N, 3)
+    b     = np.einsum("ikj,ij->ik", Rt_scaled, delta)     # (N, 3)
 
-    for s_idx, r_s in enumerate(shell_radii):
-        r_s = float(r_s)
+    erp_acc = np.zeros((len(shell_radii), n_pixels), dtype=np.float32)
 
-        # Spatial culling: only Gaussians that overlap this shell radius
-        # Criterion: |r_dist[i] - r_s| < cutoff_sigma * max_scale[i]
-        # (EgoNeRF-style: cull Gaussians that cannot contribute to this shell)
-        cull_mask = np.abs(r_dist - r_s) < cutoff_sigma * max_scale  # (N,) bool
-        relevant_idx = np.where(cull_mask)[0]  # 1-D array of Gaussian indices
+    for p0 in range(0, n_pixels, batch_size):
+        p1          = min(p0 + batch_size, n_pixels)
+        dirs_chunk  = ray_dirs[p0:p1]                      # (P, 3)
 
-        if len(relevant_idx) == 0:
-            # No Gaussians overlap this shell — leave as zero
-            continue
+        # A[i,p,k] = Rt_scaled[i,k,:] · dirs_chunk[p,:]  — shared for all shells.
+        # Kerbl et al. SIGGRAPH 2023, eq. 3 (rotation part only).
+        A_all = np.einsum("ikj,pj->ipk", Rt_scaled, dirs_chunk)  # (N, P, 3)
 
-        # Sample points on this shell: P_s = centroid + r_s * ray_dirs
-        # Shape: (H*W, 3) float32
-        sample_pts = centroid_f32 + r_s * ray_dirs  # (H*W, 3)
+        for s_idx, r_s in enumerate(shell_radii):
+            r_s = float(r_s)
 
-        # Process relevant Gaussians in batches to bound memory
-        n_rel = len(relevant_idx)
-        cutoff2 = cutoff_sigma ** 2  # scalar — for contribution masking
+            # Spatial culling: Gaussians whose extent overlaps this shell radius
+            cull  = np.abs(r_dist - r_s) < cutoff_sigma * max_scale   # (N,) bool
+            if not cull.any():
+                continue
 
-        for b_start in range(0, n_rel, batch_size):
-            b_end = min(b_start + batch_size, n_rel)
-            b_idx = relevant_idx[b_start:b_end]  # (B,)
+            A_c  = A_all[cull]      # (M, P, 3)
+            b_c  = b[cull]          # (M, 3)
+            op_c = opacity[cull]    # (M,)
 
-            # Gaussian parameters for this batch
-            b_xyz = xyz[b_idx]               # (B, 3)
-            b_opacity = opacity[b_idx]       # (B,)
-            b_Rt_sc = Rt_scaled[b_idx]       # (B, 3, 3)
-
-            # diff[b, p, j] = sample_pts[p, j] - b_xyz[b, j]
-            # sample_pts: (H*W, 3), b_xyz: (B, 3)
-            # diff: (B, H*W, 3)
-            diff = sample_pts[np.newaxis, :, :] - b_xyz[:, np.newaxis, :]
-
-            # Mahalanobis: local[b, p, k] = sum_j( Rt_sc[b,k,j] * diff[b,p,j] )
-            # = einsum('bkj, bpj -> bpk', b_Rt_sc, diff)
-            # Result shape: (B, H*W, 3)
-            local = np.einsum("bkj,bpj->bpk", b_Rt_sc, diff)
-
-            # Squared Mahalanobis distance: (B, H*W)
-            mahal2 = (local ** 2).sum(axis=-1)  # (B, H*W)
-
-            # Contribution: opacity * exp(-0.5 * mahal²), truncated at cutoff
+            # mahal[m,p,k] = r_s * A_c[m,p,k] - b_c[m,k]
             # Kerbl et al. SIGGRAPH 2023, eq. 3
+            mahal  = r_s * A_c - b_c[:, np.newaxis, :]    # (M, P, 3)
+            mahal2 = (mahal * mahal).sum(axis=-1)          # (M, P)
+
             contrib = np.where(
                 mahal2 < cutoff2,
-                b_opacity[:, np.newaxis] * np.exp(-0.5 * mahal2),
+                op_c[:, np.newaxis] * np.exp(-0.5 * mahal2),
                 0.0,
-            )  # (B, H*W)
+            )
+            erp_acc[s_idx, p0:p1] += contrib.sum(axis=0)
 
-            # Accumulate along Gaussian batch dimension → (H*W,)
-            erp_acc[s_idx] += contrib.sum(axis=0)
+    return erp_acc.reshape(len(shell_radii), H, W)
 
-    # Reshape from (N_shells, H*W) to (N_shells, H, W) and cast to float32
-    erp = erp_acc.reshape(n_shells, H, W).astype(np.float32)
-    return erp
+
+def _compute_erp_torch(
+    gs_precomp: dict,
+    centroid: np.ndarray,
+    ray_dirs: np.ndarray,
+    shell_radii: np.ndarray,
+    H: int,
+    W: int,
+    cutoff_sigma: float,
+    batch_size: int,
+    dev: "torch.device",  # noqa: F821
+) -> np.ndarray:
+    """GPU/CPU torch implementation — pixel-chunk tiling."""
+    import torch
+
+    xyz       = torch.from_numpy(gs_precomp["xyz"]).to(dev)        # (N, 3)
+    opacity   = torch.from_numpy(gs_precomp["opacity"]).to(dev)    # (N,)
+    Rt_scaled = torch.from_numpy(gs_precomp["Rt_scaled"]).to(dev)  # (N, 3, 3)
+    r_dist    = torch.from_numpy(gs_precomp["r_dist"]).to(dev)     # (N,)
+    max_scale = torch.from_numpy(gs_precomp["max_scale"]).to(dev)  # (N,)
+    dirs_t    = torch.from_numpy(ray_dirs).to(dev)                  # (H*W, 3)
+    centroid_t = torch.from_numpy(centroid.astype(np.float32)).to(dev)
+
+    n_pixels = H * W
+    cutoff2  = float(cutoff_sigma ** 2)
+    n_shells = len(shell_radii)
+
+    # b[i] = Rt_scaled[i] @ (xyz[i] - centroid) — once per sample
+    delta = xyz - centroid_t                                        # (N, 3)
+    b     = torch.einsum("ikj,ij->ik", Rt_scaled, delta)           # (N, 3)
+
+    erp_acc = torch.zeros((n_shells, n_pixels), device=dev, dtype=torch.float32)
+
+    for p0 in range(0, n_pixels, batch_size):
+        p1         = min(p0 + batch_size, n_pixels)
+        dirs_chunk = dirs_t[p0:p1]                                  # (P, 3)
+
+        # A[i,p,k] = Rt_scaled[i,k,:] · dirs_chunk[p,:] — shared for all shells
+        A_all = torch.einsum("ikj,pj->ipk", Rt_scaled, dirs_chunk)  # (N, P, 3)
+
+        for s_idx, r_s in enumerate(shell_radii):
+            r_s = float(r_s)
+
+            cull = (r_dist - r_s).abs() < cutoff_sigma * max_scale  # (N,) bool
+            if not cull.any():
+                continue
+
+            A_c  = A_all[cull]    # (M, P, 3)
+            b_c  = b[cull]        # (M, 3)
+            op_c = opacity[cull]  # (M,)
+
+            mahal  = r_s * A_c - b_c.unsqueeze(1)                   # (M, P, 3)
+            mahal2 = (mahal * mahal).sum(dim=-1)                     # (M, P)
+
+            contrib = torch.where(
+                mahal2 < cutoff2,
+                op_c.unsqueeze(1) * torch.exp(-0.5 * mahal2),
+                torch.zeros_like(mahal2),
+            )
+            erp_acc[s_idx, p0:p1] += contrib.sum(dim=0)
+
+    return erp_acc.reshape(n_shells, H, W).cpu().numpy()
 
 
 # ---------------------------------------------------------------------------
@@ -430,9 +518,10 @@ def gaussian_ply_to_erp(
     H: int = 256,
     W: int = 512,
     cutoff_sigma: float = 3.0,
-    batch_size: int = 128,
+    batch_size: int = 4096,
     r_near_pct: float = 5.0,
     r_far_pct: float = 95.0,
+    device: Optional[str] = None,
 ) -> np.ndarray:
     """Full pipeline: PLY file -> (N_shells, H, W) radiance field ERP.
 
@@ -449,9 +538,10 @@ def gaussian_ply_to_erp(
         H:           ERP height in pixels (default 256).
         W:           ERP width  in pixels (default 512).
         cutoff_sigma: Gaussian truncation radius in max_scale units (default 3.0).
-        batch_size:  Gaussians per processing batch (default 128).
+        batch_size:  Pixels per processing chunk (default 4096).
         r_near_pct:  Percentile of Gaussian distances used as r_near (default 5).
         r_far_pct:   Percentile of Gaussian distances used as r_far  (default 95).
+        device:      Torch device ('cuda', 'cpu') or None (auto-detect).
 
     Returns:
         erp: (N_shells, H, W) float32 — radiance field density ERP.
@@ -462,19 +552,10 @@ def gaussian_ply_to_erp(
     """
     ply_path = Path(ply_path)
 
-    # 1. Load Gaussian splat
-    gs = load_gaussian_ply(ply_path)
-
-    # 2. Opacity-weighted centroid
-    centroid = compute_centroid(gs["xyz"], gs["opacity"])
-
-    # 3. ERP ray directions
-    ray_dirs = build_ray_directions(H, W)  # (H*W, 3)
-
-    # 4. Precompute Gaussian parameters
+    gs         = load_gaussian_ply(ply_path)
+    centroid   = compute_centroid(gs["xyz"], gs["opacity"])
+    ray_dirs   = build_ray_directions(H, W)           # (H*W, 3)
     gs_precomp = precompute_gaussian_params(gs, centroid)
-
-    # 5. Exponential shell radii
     shell_radii = compute_shell_radii(
         gs_precomp["r_dist"],
         n_shells=n_shells,
@@ -482,8 +563,7 @@ def gaussian_ply_to_erp(
         r_far_pct=r_far_pct,
     )
 
-    # 6. Evaluate radiance field
-    erp = compute_radiance_field_erp(
+    return compute_radiance_field_erp(
         gs_precomp=gs_precomp,
         centroid=centroid,
         ray_dirs=ray_dirs,
@@ -492,6 +572,5 @@ def gaussian_ply_to_erp(
         W=W,
         cutoff_sigma=cutoff_sigma,
         batch_size=batch_size,
+        device=device,
     )
-
-    return erp  # (N_shells, H, W) float32

@@ -30,7 +30,6 @@ References:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from pathlib import Path
 from typing import Callable
@@ -302,16 +301,27 @@ class GaussianERPDataset(Dataset):
         return self.cache_dir / subdir_name
 
     def _cache_path_for(self, ply_path: Path) -> Path | None:
-        """Return the .npy cache path for *ply_path* (None if caching disabled)."""
+        """Return the .npy cache path for *ply_path* (None if caching disabled).
+
+        Mirrors the source directory structure so the cache is human-readable:
+            <cache_subdir>/<category>/train|test/<id>.npy
+        matching:
+            <data_root>/<category>/train|test/<id>/point_cloud.ply
+        """
         subdir = self._cache_subdir()
         if subdir is None:
             return None
 
-        # Use the SHA-256 of the absolute PLY path string as the filename.
-        # This keeps cache filenames short and avoids deep directory nesting
-        # while guaranteeing uniqueness across all objects.
-        path_hash = hashlib.sha256(str(ply_path.resolve()).encode()).hexdigest()
-        return subdir / f"{path_hash}.npy"
+        # rel = <category>/train|test/<id>/point_cloud.ply
+        try:
+            rel = ply_path.resolve().relative_to(self.data_root.resolve())
+        except ValueError:
+            # Fallback: use just the immediate parent name as the stem
+            rel = Path(ply_path.parent.name) / ply_path.name
+
+        # Drop the point_cloud.ply filename; use the object-id directory as stem
+        # rel.parent = <category>/train|test/<id>  →  cache: <category>/train|test/<id>.npy
+        return subdir / rel.parent.with_suffix(".npy")
 
     def _load_or_compute(self, ply_path: Path) -> np.ndarray:
         """Load a cached ERP, or compute and cache it if absent.
@@ -344,6 +354,7 @@ class GaussianERPDataset(Dataset):
             batch_size=self.batch_size_rf,
             r_near_pct=self.r_near_pct,
             r_far_pct=self.r_far_pct,
+            device=None,  # auto-detect: CUDA if available, else CPU
         )
 
         if cache_path is not None:
@@ -413,7 +424,7 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
     cutoff_sigma = float(data_cfg.get("cutoff_sigma", 3.0))
     r_near_pct   = float(data_cfg.get("r_near_pct",  5.0))
     r_far_pct    = float(data_cfg.get("r_far_pct",  95.0))
-    batch_size_rf = int(data_cfg.get("batch_size_rf", 128))
+    batch_size_rf = int(data_cfg.get("batch_size_rf", 4096))
 
     cache_dir_raw = data_cfg.get("cache_dir", None)
     cache_dir = Path(cache_dir_raw) if cache_dir_raw is not None else None
