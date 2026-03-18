@@ -164,6 +164,7 @@ class GaussianERPDataset(Dataset):
         r_far_pct: float = 95.0,
         cache_dir: Path | None = None,
         augment_train: bool = True,
+        augment_prob: float = 0.3,
         val_fraction: float = 0.2,
         seed: int = 42,
         transform: Callable | None = None,
@@ -184,6 +185,7 @@ class GaussianERPDataset(Dataset):
         self.r_far_pct    = r_far_pct
         self.cache_dir    = Path(cache_dir) if cache_dir is not None else None
         self._do_augment  = augment_train and (split == "train")
+        self._augment_prob = augment_prob
         self.val_fraction = val_fraction
         self.seed         = seed
         self.transform    = transform
@@ -220,7 +222,7 @@ class GaussianERPDataset(Dataset):
 
         # Augmentation on training split only — HSDC §III-A / SWHDC §IV-A
         if self._do_augment:
-            erp = augment(erp, prob=0.15, rng=None)  # fresh entropy each call → varies per epoch
+            erp = augment(erp, prob=self._augment_prob, rng=None)  # fresh entropy each call → varies per epoch
 
         tensor = torch.from_numpy(erp.copy())  # (N_shells, H, W) float32
 
@@ -427,6 +429,8 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
     cache_dir_raw = data_cfg.get("cache_dir", None)
     cache_dir = Path(cache_dir_raw) if cache_dir_raw is not None else None
 
+    augment_prob = float(data_cfg.get("augment_prob", 0.3))
+
     # DataLoader parameters
     batch_size   = int(data_cfg.get("batch_size",  32))
     num_workers  = int(data_cfg.get("num_workers",  4))
@@ -458,6 +462,7 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
             r_far_pct=r_far_pct,
             cache_dir=cache_dir,
             augment_train=True,
+            augment_prob=augment_prob,
             val_fraction=val_fraction,
             seed=seed,
         )

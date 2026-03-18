@@ -190,33 +190,57 @@ def gaussian_noise_erp(
 
 
 # ---------------------------------------------------------------------------
+# Horizontal flip (azimuthal rotation of 180°)
+# ---------------------------------------------------------------------------
+
+def random_horizontal_flip_erp(erp: np.ndarray) -> np.ndarray:
+    """Flip the ERP image along the horizontal (width) axis.
+
+    In equirectangular projection a horizontal flip corresponds to an
+    azimuthal rotation of 180°, which is a valid rigid transformation for
+    3D object classification — objects are symmetric under arbitrary
+    azimuthal orientations.
+
+    Args:
+        erp: (C, H, W) float32 — input ERP image, any C ≥ 1.
+
+    Returns:
+        flipped: (C, H, W) float32 — horizontally flipped ERP.
+    """
+    return erp[:, :, ::-1].copy()
+
+
+# ---------------------------------------------------------------------------
 # Composite augmentation
 # ---------------------------------------------------------------------------
 
 def augment(
     erp: np.ndarray,
-    prob: float = 0.15,
+    prob: float = 0.3,
+    flip_prob: float = 0.5,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    """Apply all three augmentation primitives independently.
+    """Apply all augmentation primitives to an ERP image.
 
-    Each primitive fires independently with probability *prob* (default 0.15).
-    The input may have any number of channels C ≥ 1 — the function is
-    agnostic to C and works for the 3DGS N-shell ERP as well as the
-    original 12-channel or 1-channel mesh-based ERPs.
+    Augmentations applied:
+      - Horizontal flip  with probability *flip_prob* (default 0.5).
+        Equivalent to azimuthal rotation of 180° — free invariance for 3D objects.
+      - 3-D rotation, Gaussian blur, Gaussian noise each with probability *prob*
+        (default 0.3; original papers used 0.15, but 0.3 is better for training
+        from scratch with a small dataset).
 
-    The augmentation protocol is identical in both papers (HSDC §III-A /
-    SWHDC §IV-A).
+    The input may have any number of channels C ≥ 1.
 
     Augmentation parameter ranges:
-        Rotation  x, y: [0°, 15°]   z: [0°, 45°]
+        Rotation  x, y: [0°, 15°]   z: [0°, 45°]   (HSDC §III-A / SWHDC §IV-A)
         Blur      σ:    [0.1, 2.0]
         Noise     mean: [0, 0.001]  σ: [0, 0.03]
 
     Args:
-        erp:  (C, H, W) float32 — ERP image, any C ≥ 1.
-        prob: Probability of each primitive being applied (default 0.15).
-        rng:  Optional numpy random Generator for reproducibility.
+        erp:       (C, H, W) float32 — ERP image, any C ≥ 1.
+        prob:      Probability for each of the three paper augmentations (default 0.3).
+        flip_prob: Probability of horizontal flip (default 0.5).
+        rng:       Optional numpy random Generator; if None a fresh one is created.
 
     Returns:
         result: (C, H, W) float32 — augmented ERP image (may be unchanged).
@@ -225,6 +249,10 @@ def augment(
         rng = np.random.default_rng()
 
     result = erp.copy()
+
+    # --- Horizontal flip (azimuthal rotation of 180°) ---
+    if rng.random() < flip_prob:
+        result = random_horizontal_flip_erp(result)
 
     # --- 3-D rotation ---
     if rng.random() < prob:

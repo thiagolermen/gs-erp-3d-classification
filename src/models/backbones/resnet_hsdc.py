@@ -113,8 +113,15 @@ class HSDCNet(nn.Module):
     # ResNet-34 block counts per stage — HSDC paper Table 1
     _LAYERS: tuple[int, ...] = (3, 4, 6, 3)
 
-    def __init__(self, in_channels: int = 8, num_classes: int = 10) -> None:
+    def __init__(self, in_channels: int = 8, num_classes: int = 10, dropout: float = 0.0) -> None:
         super().__init__()
+
+        # Per-channel instance normalisation — critical for radiance field ERP:
+        # each shell has a different density magnitude (inner shells = dense core,
+        # outer shells = sparse/empty).  InstanceNorm2d normalises each channel
+        # independently per sample, removing scale variation before the stem.
+        # affine=True adds a learnable scale+bias (2 × in_channels parameters).
+        self.input_norm = nn.InstanceNorm2d(in_channels, affine=True)
 
         # Conv 1: 1× HSDC block (7×7, 64 out-channels) — Table 1
         # stride=2 halves spatial size: (B, in_channels, 256, 512) → (B, 64, 128, 256)
@@ -130,8 +137,8 @@ class HSDCNet(nn.Module):
         self.layer3 = self._make_stage(128, 256, self._LAYERS[2], stride=2)
         self.layer4 = self._make_stage(256, 512, self._LAYERS[3], stride=2)
 
-        # Global-average-pool → FC → num_classes
-        self.head = ClassificationHead(512, num_classes)
+        # Global-average-pool → Dropout → FC → num_classes
+        self.head = ClassificationHead(512, num_classes, dropout=dropout)
 
         self._init_weights()
 
@@ -170,6 +177,7 @@ class HSDCNet(nn.Module):
     # ------------------------------------------------------------------
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.input_norm(x)
         x = self.stem(x)
         x = self.layer1(x)
         x = self.layer2(x)
@@ -284,8 +292,11 @@ class SWHDCResNet(nn.Module):
     )
     _DEPTHS: tuple[int, ...] = (3, 4, 6, 3)
 
-    def __init__(self, in_channels: int = 8, num_classes: int = 10) -> None:
+    def __init__(self, in_channels: int = 8, num_classes: int = 10, dropout: float = 0.0) -> None:
         super().__init__()
+
+        # Per-channel instance normalisation (same rationale as HSDCNet)
+        self.input_norm = nn.InstanceNorm2d(in_channels, affine=True)
 
         # Standard ResNet-50 stem (7×7 conv, BN, ReLU, MaxPool)
         # stride=2 twice: (B, in_channels, 256, 512) → (B, 64, 64, 128)
@@ -313,7 +324,7 @@ class SWHDCResNet(nn.Module):
             self._CFG[3], self._DEPTHS[3], stride=2, erp_height=heights[3]
         )
 
-        self.head = ClassificationHead(2048, num_classes)
+        self.head = ClassificationHead(2048, num_classes, dropout=dropout)
 
         self._init_weights()
 
@@ -353,6 +364,7 @@ class SWHDCResNet(nn.Module):
     # ------------------------------------------------------------------
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.input_norm(x)
         x = self.stem(x)
         x = self.layer1(x)
         x = self.layer2(x)

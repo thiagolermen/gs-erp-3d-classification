@@ -34,12 +34,14 @@ class ClassificationHead(nn.Module):
     Output:  ``(B, num_classes)`` logits
     """
 
-    def __init__(self, in_features: int, num_classes: int) -> None:
+    def __init__(self, in_features: int, num_classes: int, dropout: float = 0.0) -> None:
         super().__init__()
-        self.gap = nn.AdaptiveAvgPool2d(1)
-        self.fc  = nn.Linear(in_features, num_classes)
+        self.gap     = nn.AdaptiveAvgPool2d(1)
+        self.dropout = nn.Dropout(p=dropout)
+        self.fc      = nn.Linear(in_features, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 4:
             x = self.gap(x).flatten(1)   # (B, C, H, W) → (B, C)
+        x = self.dropout(x)
         return self.fc(x)                # (B, num_classes)

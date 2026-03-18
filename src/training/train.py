@@ -115,12 +115,13 @@ def build_model(cfg: dict) -> nn.Module:
     block       = str(model_cfg["block"]).lower()
     num_classes = int(model_cfg["num_classes"])
     in_channels = int(model_cfg.get("in_channels", 8))
+    dropout     = float(model_cfg.get("dropout", 0.0))
 
     if backbone == "resnet34" and block == "hsdc":
-        return HSDCNet(in_channels=in_channels, num_classes=num_classes)
+        return HSDCNet(in_channels=in_channels, num_classes=num_classes, dropout=dropout)
 
     if backbone == "resnet50" and block == "swhdc":
-        return SWHDCResNet(in_channels=in_channels, num_classes=num_classes)
+        return SWHDCResNet(in_channels=in_channels, num_classes=num_classes, dropout=dropout)
 
     raise ValueError(
         f"Unsupported backbone+block combination: '{backbone}' + '{block}'. "
@@ -456,7 +457,26 @@ def run_training(config_path: Path) -> dict[str, Any]:
     # ------------------------------------------------------------------
     train_cfg = cfg["training"]
     label_smoothing = float(train_cfg.get("label_smoothing", 0.0))
-    criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
+    class_weight_tensor: torch.Tensor | None = None
+    if bool(train_cfg.get("class_weighted_loss", False)):
+        # Compute inverse-frequency weights from the training set label counts.
+        # weight[c] = N_total / (N_classes * N_c)  — balances minority classes.
+        train_labels = [label for _, label in loaders["train"].dataset.samples]
+        num_cls      = int(cfg["model"]["num_classes"])
+        counts       = torch.zeros(num_cls)
+        for lbl in train_labels:
+            counts[lbl] += 1
+        # Guard against zero-count classes (shouldn't happen on well-formed data)
+        counts = counts.clamp(min=1)
+        class_weight_tensor = (len(train_labels) / (num_cls * counts)).to(device)
+        logger.info("Class weights (min=%.3f  max=%.3f)", class_weight_tensor.min().item(),
+                    class_weight_tensor.max().item())
+
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weight_tensor,
+        label_smoothing=label_smoothing,
+    )
 
     # ------------------------------------------------------------------
     # 8. Optimizer, LR scheduler, early stopping

@@ -285,7 +285,7 @@ class TestHSDCNet:
         """HSDCNet must reject inputs with wrong channel count."""
         model = HSDCNet(in_channels=8, num_classes=10)
         model.eval()
-        with pytest.raises(RuntimeError):
+        with pytest.raises((RuntimeError, ValueError)):
             with torch.no_grad():
                 model(_rand((1, 3, 256, 512)))   # wrong: 3 instead of 8
 
@@ -332,7 +332,7 @@ class TestSWHDCResNet:
         """SWHDCResNet must reject inputs with wrong channel count."""
         model = SWHDCResNet(in_channels=8, num_classes=10)
         model.eval()
-        with pytest.raises(RuntimeError):
+        with pytest.raises((RuntimeError, ValueError)):
             with torch.no_grad():
                 model(_rand((1, 3, 256, 512)))   # wrong: 3 instead of 8
 

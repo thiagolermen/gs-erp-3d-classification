@@ -155,7 +155,7 @@ def build_lr_scheduler(
 ) -> lr_sched.LRScheduler:
     """Build a learning-rate scheduler from the experiment config.
 
-    Two modes, selected by ``cfg['training']['lr_scheduler']``:
+    Two main modes, selected by ``cfg['training']['lr_scheduler']``:
 
     - ``'step'`` (default): :class:`StepLR` with decay factor γ every N epochs.
       PyTorch's ``StepLR`` has no built-in LR floor; the calling code must
@@ -163,15 +163,22 @@ def build_lr_scheduler(
       ``scheduler.step()`` call.
 
     - ``'cosine'``: :class:`CosineAnnealingLR` with ``eta_min = lr_min``.
-      Recommended for Swin-T experiments (matches the Swin paper schedule).
+
+    Optional linear warmup (``lr_warmup_epochs > 0``): ramps the LR from
+    ``start_factor × base_lr`` to ``base_lr`` over the first N epochs using
+    :class:`LinearLR`, then hands off to the main scheduler via
+    :class:`SequentialLR`.  The main scheduler's epoch count is offset by
+    ``lr_warmup_epochs`` so that, e.g., ``StepLR(step_size=50)`` fires at
+    epoch 50 of the *main phase* (epoch 60 of total training).
 
     Configuration keys read from ``cfg['training']``:
 
-    - ``lr_scheduler``  : ``'step'`` or ``'cosine'`` (default ``'step'``)
-    - ``lr_step_size``  : Decay period in epochs (default ``25``)
-    - ``lr_gamma``      : Decay factor (default ``0.9``)
-    - ``lr_min``        : LR floor for cosine / clamp reference (default ``1e-7``)
-    - ``max_epochs``    : Used as ``T_max`` for cosine annealing
+    - ``lr_scheduler``     : ``'step'`` or ``'cosine'`` (default ``'step'``)
+    - ``lr_step_size``     : Decay period in epochs (default ``50``)
+    - ``lr_gamma``         : Decay factor (default ``0.5``)
+    - ``lr_min``           : LR floor for cosine / clamp reference (default ``1e-7``)
+    - ``max_epochs``       : Used as ``T_max`` for cosine annealing
+    - ``lr_warmup_epochs`` : Linear warmup length in epochs (default ``0`` = off)
 
     References:
         HSDC paper §III-A — StepLR, step_size=25, gamma=0.9, lr_min=1e-7
@@ -179,21 +186,36 @@ def build_lr_scheduler(
     train_cfg      = cfg["training"]
     scheduler_name = str(train_cfg.get("lr_scheduler", "step")).lower()
     lr_min         = float(train_cfg.get("lr_min", 1e-7))
+    warmup_epochs  = int(train_cfg.get("lr_warmup_epochs", 0))
 
+    # Build the main (post-warmup) scheduler
     if scheduler_name == "step":
-        return lr_sched.StepLR(
+        main_sched: lr_sched.LRScheduler = lr_sched.StepLR(
             optimizer,
-            step_size=int(train_cfg.get("lr_step_size", 25)),
-            gamma=float(train_cfg.get("lr_gamma", 0.9)),
+            step_size=int(train_cfg.get("lr_step_size", 50)),
+            gamma=float(train_cfg.get("lr_gamma", 0.5)),
+        )
+    elif scheduler_name == "cosine":
+        # Cosine T_max counts only the non-warmup epochs
+        t_max = int(train_cfg["max_epochs"]) - warmup_epochs
+        main_sched = lr_sched.CosineAnnealingLR(optimizer, T_max=max(t_max, 1), eta_min=lr_min)
+    else:
+        raise ValueError(
+            f"Unknown lr_scheduler '{scheduler_name}'. Supported: 'step', 'cosine'."
         )
 
-    if scheduler_name == "cosine":
-        return lr_sched.CosineAnnealingLR(
-            optimizer,
-            T_max=int(train_cfg["max_epochs"]),
-            eta_min=lr_min,
-        )
+    if warmup_epochs <= 0:
+        return main_sched
 
-    raise ValueError(
-        f"Unknown lr_scheduler '{scheduler_name}'. Supported: 'step', 'cosine'."
+    # Prepend a linear warmup phase (10% → 100% of base LR)
+    warmup = lr_sched.LinearLR(
+        optimizer,
+        start_factor=0.1,
+        end_factor=1.0,
+        total_iters=warmup_epochs,
+    )
+    return lr_sched.SequentialLR(
+        optimizer,
+        schedulers=[warmup, main_sched],
+        milestones=[warmup_epochs],
     )
