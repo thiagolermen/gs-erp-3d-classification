@@ -220,9 +220,7 @@ class GaussianERPDataset(Dataset):
 
         # Augmentation on training split only — HSDC §III-A / SWHDC §IV-A
         if self._do_augment:
-            # Per-sample seed derived from dataset seed + index for reproducibility
-            sample_rng = np.random.default_rng(self.seed + idx)
-            erp = augment(erp, prob=0.15, rng=sample_rng)
+            erp = augment(erp, prob=0.15, rng=None)  # fresh entropy each call → varies per epoch
 
         tensor = torch.from_numpy(erp.copy())  # (N_shells, H, W) float32
 

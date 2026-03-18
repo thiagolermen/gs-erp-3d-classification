@@ -523,19 +523,6 @@ def run_training(config_path: Path) -> dict[str, Any]:
                          f"{train_acc:.4f}", f"{val_acc:.4f}", f"{current_lr:.2e}"])
         csv_fh.flush()
 
-        # Log
-        logger.info(
-            "Ep %4d/%d | "
-            "tr_loss=%.4f  tr_acc=%6.2f%%  "
-            "val_loss=%.4f  val_acc=%6.2f%%  "
-            "lr=%.2e  pat=%d/%d",
-            epoch, max_epochs,
-            train_loss, train_acc,
-            val_loss, val_acc,
-            current_lr,
-            early_stopping.counter, early_stopping.patience,
-        )
-
         # Save best checkpoint
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -557,8 +544,23 @@ def run_training(config_path: Path) -> dict[str, Any]:
                 model, optimizer, scheduler, early_stopping, epoch, val_acc,
             )
 
-        # Early stopping
-        if early_stopping.step(val_acc):
+        # Early stopping (step first so counter reflects current epoch in log)
+        stop = early_stopping.step(val_acc)
+
+        # Log
+        logger.info(
+            "Ep %4d/%d | "
+            "tr_loss=%.4f  tr_acc=%6.2f%%  "
+            "val_loss=%.4f  val_acc=%6.2f%%  "
+            "lr=%.2e  pat=%d/%d",
+            epoch, max_epochs,
+            train_loss, train_acc,
+            val_loss, val_acc,
+            current_lr,
+            early_stopping.counter, early_stopping.patience,
+        )
+
+        if stop:
             logger.info(
                 "Early stopping at epoch %d — patience=%d exhausted.",
                 epoch, early_stopping.patience,
