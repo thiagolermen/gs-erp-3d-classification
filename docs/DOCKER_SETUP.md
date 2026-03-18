@@ -4,8 +4,9 @@
 > - **Local machine** — data download, preprocessing, notebooks (Python venv, CPU)
 > - **Lab machine (`lermen@anubis`)** — training and evaluation (Docker, GPU)
 >
-> Lab machine specs: Ubuntu 22.04.1 LTS (Linux 6.8.0-101-generic x86_64), Docker 26.0.0
-> GPU: NVIDIA GeForce RTX 2070 — 8 GB VRAM, driver 560.35.03, CUDA 12.6 capable
+> Lab machines (same user `lermen`, same password):
+> - **anubis** (`anubis.inf.ufrgs.br`) — Ubuntu 22.04.1 LTS, Docker 26.0.0, RTX 2070 8 GB, driver 560.35.03
+> - **sauron** (`sauron.inf.ufrgs.br`) — same credentials, use for parallel training runs
 
 ---
 
