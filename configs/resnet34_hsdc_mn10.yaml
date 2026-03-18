@@ -21,31 +21,34 @@ data:
   batch_size: 32
   train_val_split: 0.8
   augment_prob: 0.3                  # per-primitive augmentation probability (0.15 in paper)
+  log1p_transform: true              # compress [0,~14] → [0,~2.7]; amplifies low-density boundaries
+  derived_channels:                  # appended after log1p, before augmentation
+    - pseudo_depth                   # density-weighted avg shell index per pixel
+    - mip                            # max intensity projection across shells
 
 model:
   backbone: resnet34
   block: hsdc
   num_classes: 10
-  in_channels: 8                     # equals n_shells
+  in_channels: 10                    # 8 density shells + pseudo_depth + mip
   erp_width: 512
   erp_height: 256
-  dropout: 0.3                       # dropout before final FC (was 0.0)
+  dropout: 0.3                       # dropout before final FC
 
 training:
   max_epochs: 500                    # HSDC paper §III-A
-  optimizer: adam
+  optimizer: adamw                   # decoupled weight decay (was adam)
   lr: 1.0e-4
-  weight_decay: 1.0e-4               # L2 regularisation (was 0.0)
-  lr_scheduler: step
-  lr_step_size: 50                   # less frequent drops (was 25)
-  lr_gamma: 0.5                      # stronger per-step (was 0.9) — decays 1e-4→1e-7 in 500 ep
-  lr_min: 1.0e-7
+  weight_decay: 5.0e-4               # stronger regularisation (was 1e-4)
+  lr_scheduler: cosine               # smoother decay (was step)
+  lr_min: 1.0e-6                     # slightly higher floor (was 1e-7)
   lr_warmup_epochs: 10               # linear warmup from 10% to 100% of base LR
-  early_stopping_patience: 50        # wider window — allow 1+ LR drops to manifest (was 25)
+  early_stopping_patience: 100       # give cosine schedule room to work (was 50)
   gradient_clip_norm: 1.0
   mixed_precision: true
-  label_smoothing: 0.1               # reduces overconfidence on ambiguous classes (was 0.0)
+  label_smoothing: 0.1               # reduces overconfidence on ambiguous classes
   class_weighted_loss: true          # up-weight minority classes (bathtub 50 vs chair 100 samples)
+  mixup_alpha: 0.4                   # MixUp blending — directly attacks generalization gap
 
 output:
   experiments_dir: experiments

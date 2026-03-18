@@ -1,12 +1,17 @@
 # Architecture
 
-Two model configurations, both operating on 8-shell radiance field ERP tensors
+Two model configurations, both operating on radiance field ERP tensors
 produced from 3D Gaussian Splat PLY files.
+
+The default input has **10 channels**: 8 density shells + pseudo-depth + MIP
+(maximum intensity projection). The raw 8-shell density ERP is transformed
+via log1p and augmented with derived feature channels before being fed to
+the model. Both models accept arbitrary `in_channels` via config.
 
 | Model | Input | Backbone | Block | Params |
 |---|---|---|---|---|
-| HSDCNet | (B, 8, 256, 512) | ResNet-34 | HSDC | ≈ 5.3 M |
-| SWHDCResNet | (B, 8, 256, 512) | ResNet-50 | SWHDC | ≈ 25.5 M |
+| HSDCNet | (B, 10, 256, 512) | ResNet-34 | HSDC | ≈ 5.5 M |
+| SWHDCResNet | (B, 10, 256, 512) | ResNet-50 | SWHDC | ≈ 23.6 M |
 
 ---
 
@@ -72,9 +77,9 @@ Equator (sin(φ)≈1 → R_φ≈1): W₁=1. Poles (sin(φ)≈0 → R_φ=4): W₄
 > HSDC paper §II-C, Table 1 — `src/models/backbones/resnet_hsdc.py`
 
 ```
-Input: (B, 8, 256, 512)
+Input: (B, 10, 256, 512)
 
-Stem:    HSDCBlock(8→64, 7×7, stride=2)  → (B, 64, 128, 256)
+Stem:    HSDCBlock(10→64, 7×7, stride=2) → (B, 64, 128, 256)
          MaxPool(3×3, stride=2)           → (B, 64,  64, 128)
 
 Layer 1: 3× HSDCBasicBlock(64→64)         → (B,  64, 64, 128)
@@ -102,9 +107,9 @@ Parameters: ≈ 5.3 M
 > SWHDC paper §III-B, §IV-A — `src/models/backbones/resnet_hsdc.py`
 
 ```
-Input: (B, 8, 256, 512)
+Input: (B, 10, 256, 512)
 
-Stem:    Conv(8→64, 7×7, stride=2) + BN + ReLU
+Stem:    Conv(10→64, 7×7, stride=2) + BN + ReLU
          MaxPool(3×3, stride=2)     → (B, 64, 64, 128)
 
 Layer 1: 3× SWHDCBottleneck(64→256,   mid=64,  H=64)

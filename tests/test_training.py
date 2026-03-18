@@ -30,6 +30,7 @@ from src.training.train import (
     build_model,
     eval_one_epoch,
     load_checkpoint,
+    mixup_data,
     save_checkpoint,
     set_seed,
     train_one_epoch,
@@ -485,3 +486,53 @@ class TestBuildModel:
         with torch.no_grad():
             y = model(torch.randn(2, 8, 64, 128))
         assert y.shape == (2, 10)
+
+
+# ---------------------------------------------------------------------------
+# MixUp tests
+# ---------------------------------------------------------------------------
+
+
+class TestMixUp:
+    def test_mixup_shapes(self) -> None:
+        """mixup_data must preserve tensor shapes."""
+        x = torch.randn(8, 4, 16, 32)
+        y = torch.randint(0, 5, (8,))
+        x_mix, y_a, y_b, lam = mixup_data(x, y, alpha=0.4)
+        assert x_mix.shape == x.shape
+        assert y_a.shape == y.shape
+        assert y_b.shape == y.shape
+
+    def test_mixup_alpha_zero_identity(self) -> None:
+        """alpha=0 means no mixing — returns original x, same y for both."""
+        x = torch.randn(4, 2, 8, 8)
+        y = torch.tensor([0, 1, 2, 3])
+        x_mix, y_a, y_b, lam = mixup_data(x, y, alpha=0.0)
+        assert torch.allclose(x_mix, x)
+        assert torch.equal(y_a, y)
+        assert torch.equal(y_b, y)
+        assert lam == 1.0
+
+    def test_mixup_lambda_in_range(self) -> None:
+        """Lambda must be in [0, 1]."""
+        x = torch.randn(8, 4, 8, 16)
+        y = torch.randint(0, 5, (8,))
+        for _ in range(20):
+            _, _, _, lam = mixup_data(x, y, alpha=0.4)
+            assert 0.0 <= lam <= 1.0
+
+    def test_train_with_mixup_runs(self) -> None:
+        """train_one_epoch with mixup_alpha > 0 must run without error."""
+        C, K = 4, 5
+        model = _TinyModel(in_channels=C, num_classes=K)
+        loader = _make_loader(in_channels=C, num_classes=K)
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        scaler = torch.cuda.amp.GradScaler(enabled=False)
+        device = torch.device("cpu")
+        loss, acc = train_one_epoch(
+            model, loader, criterion, optimizer, scaler,
+            device, grad_clip=1.0, use_amp=False, mixup_alpha=0.4,
+        )
+        assert isinstance(loss, float)
+        assert 0.0 <= acc <= 100.0

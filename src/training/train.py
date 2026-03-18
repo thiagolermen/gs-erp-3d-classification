@@ -130,6 +130,38 @@ def build_model(cfg: dict) -> nn.Module:
 
 
 # ---------------------------------------------------------------------------
+# MixUp augmentation (Zhang et al., 2018)
+# ---------------------------------------------------------------------------
+
+
+def mixup_data(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    alpha: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+    """Apply MixUp augmentation to a batch (Zhang et al., 2018).
+
+    Blends pairs of samples: ``x_mix = λ·x_i + (1-λ)·x_j`` where
+    ``λ ~ Beta(alpha, alpha)``.  Directly attacks the generalization gap
+    by encouraging linear behaviour between training examples.
+
+    Args:
+        x:     (B, C, H, W) input batch.
+        y:     (B,) integer labels.
+        alpha: Beta distribution parameter.  0 disables MixUp.
+
+    Returns:
+        (x_mixed, y_a, y_b, lam) — mixed inputs, two label vectors, and λ.
+    """
+    if alpha <= 0.0:
+        return x, y, y, 1.0
+    lam = float(np.random.beta(alpha, alpha))
+    index = torch.randperm(x.size(0), device=x.device)
+    x_mixed = lam * x + (1.0 - lam) * x[index]
+    return x_mixed, y, y[index], lam
+
+
+# ---------------------------------------------------------------------------
 # Training / validation epoch
 # ---------------------------------------------------------------------------
 
@@ -143,10 +175,12 @@ def train_one_epoch(
     device: torch.device,
     grad_clip: float,
     use_amp: bool = True,
+    mixup_alpha: float = 0.0,
 ) -> tuple[float, float]:
     """Run one full training epoch.
 
     Applies:
+    - Optional MixUp augmentation (Zhang et al., 2018)
     - Forward pass (with optional AMP autocast)
     - CrossEntropyLoss (with optional label smoothing already baked into
       *criterion*)
@@ -155,24 +189,26 @@ def train_one_epoch(
     - Optimizer step
 
     Args:
-        model:     Model in ``train()`` mode.
-        loader:    Training :class:`DataLoader`.
-        criterion: Loss function (e.g. ``nn.CrossEntropyLoss``).
-        optimizer: Configured optimizer.
-        scaler:    AMP :class:`GradScaler` (no-op when ``enabled=False``).
-        device:    Target device.
-        grad_clip: Max gradient norm for :func:`torch.nn.utils.clip_grad_norm_`.
-        use_amp:   Enable FP16 mixed-precision (CUDA only).
+        model:       Model in ``train()`` mode.
+        loader:      Training :class:`DataLoader`.
+        criterion:   Loss function (e.g. ``nn.CrossEntropyLoss``).
+        optimizer:   Configured optimizer.
+        scaler:      AMP :class:`GradScaler` (no-op when ``enabled=False``).
+        device:      Target device.
+        grad_clip:   Max gradient norm for :func:`torch.nn.utils.clip_grad_norm_`.
+        use_amp:     Enable FP16 mixed-precision (CUDA only).
+        mixup_alpha: Beta distribution parameter for MixUp.  0 disables MixUp.
 
     Returns:
         Tuple ``(mean_loss, accuracy_percent)`` over all batches.
 
     References:
         HSDC paper §III-A — gradient clipping, AMP
+        Zhang et al., "mixup: Beyond Empirical Risk Minimization", ICLR 2018
     """
     model.train()
     total_loss    = 0.0
-    total_correct = 0
+    total_correct = 0.0
     total_samples = 0
 
     pbar = tqdm(loader, desc="  Train", leave=False, dynamic_ncols=True)
@@ -182,9 +218,20 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=use_amp):
-            logits = model(inputs)
-            loss   = criterion(logits, targets)
+        if mixup_alpha > 0.0:
+            inputs, targets_a, targets_b, lam = mixup_data(inputs, targets, mixup_alpha)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits = model(inputs)
+                loss = lam * criterion(logits, targets_a) + (1.0 - lam) * criterion(logits, targets_b)
+            preds = logits.argmax(dim=1)
+            total_correct += (lam * (preds == targets_a).float().sum().item()
+                              + (1.0 - lam) * (preds == targets_b).float().sum().item())
+        else:
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits = model(inputs)
+                loss   = criterion(logits, targets)
+            preds = logits.argmax(dim=1)
+            total_correct += (preds == targets).sum().item()
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -194,8 +241,6 @@ def train_one_epoch(
 
         b              = inputs.size(0)
         total_loss    += loss.item() * b
-        preds          = logits.argmax(dim=1)
-        total_correct += (preds == targets).sum().item()
         total_samples += b
 
         pbar.set_postfix(loss=f"{loss.item():.4f}")
@@ -485,10 +530,11 @@ def run_training(config_path: Path) -> dict[str, Any]:
     scheduler      = build_lr_scheduler(optimizer, cfg)
     early_stopping = EarlyStopping(patience=int(train_cfg.get("early_stopping_patience", 25)))
 
-    lr_min     = float(train_cfg.get("lr_min", 1e-7))
-    grad_clip  = float(train_cfg.get("gradient_clip_norm", 1.0))
-    max_epochs = int(train_cfg["max_epochs"])
-    save_every = int(cfg.get("output", {}).get("save_every_n_epochs", 0))
+    lr_min      = float(train_cfg.get("lr_min", 1e-7))
+    grad_clip   = float(train_cfg.get("gradient_clip_norm", 1.0))
+    max_epochs  = int(train_cfg["max_epochs"])
+    save_every  = int(cfg.get("output", {}).get("save_every_n_epochs", 0))
+    mixup_alpha = float(train_cfg.get("mixup_alpha", 0.0))
 
     # ------------------------------------------------------------------
     # 9. AMP
@@ -525,7 +571,7 @@ def run_training(config_path: Path) -> dict[str, Any]:
         # Train
         train_loss, train_acc = train_one_epoch(
             model, loaders["train"], criterion, optimizer, scaler,
-            device, grad_clip, use_amp,
+            device, grad_clip, use_amp, mixup_alpha=mixup_alpha,
         )
 
         # Validate

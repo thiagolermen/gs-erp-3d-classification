@@ -190,6 +190,59 @@ def gaussian_noise_erp(
 
 
 # ---------------------------------------------------------------------------
+# Random erasing
+# ---------------------------------------------------------------------------
+
+
+def random_erasing_erp(
+    erp: np.ndarray,
+    area_range: tuple[float, float] = (0.02, 0.33),
+    aspect_range: tuple[float, float] = (0.3, 3.3),
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Zero out a random rectangular patch of an ERP image.
+
+    The erased region covers between 2% and 33% of the total area.
+    Aspect ratio is sampled log-uniformly from [0.3, 3.3].
+    Forces the model to use global structure rather than memorise
+    local density patterns (Zhong et al., 2020).
+
+    Args:
+        erp:          (C, H, W) float32 — input ERP image, any C >= 1.
+        area_range:   Min/max fraction of total area to erase.
+        aspect_range: Min/max aspect ratio of the erased patch.
+        rng:          Optional numpy random Generator.
+
+    Returns:
+        erased: (C, H, W) float32 — ERP with one rectangular patch zeroed out.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    C, H, W = erp.shape
+    total_area = H * W
+
+    # Sample target area and aspect ratio
+    target_area = float(rng.uniform(area_range[0], area_range[1])) * total_area
+    log_aspect = float(rng.uniform(np.log(aspect_range[0]), np.log(aspect_range[1])))
+    aspect = np.exp(log_aspect)
+
+    # Compute patch dimensions
+    h = int(round(np.sqrt(target_area / aspect)))
+    w = int(round(np.sqrt(target_area * aspect)))
+    h = max(1, min(h, H))
+    w = max(1, min(w, W))
+
+    # Random top-left corner
+    top  = int(rng.integers(0, max(H - h, 0) + 1))
+    left = int(rng.integers(0, max(W - w, 0) + 1))
+
+    result = erp.copy()
+    result[:, top:top + h, left:left + w] = 0.0
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Horizontal flip (azimuthal rotation of 180°)
 # ---------------------------------------------------------------------------
 
@@ -271,5 +324,9 @@ def augment(
         noise_mean = float(rng.uniform(0.0, 0.001))
         noise_std  = float(rng.uniform(0.0, 0.03))
         result = gaussian_noise_erp(result, noise_mean, noise_std, rng=rng)
+
+    # --- Random erasing (Zhong et al., 2020) ---
+    if rng.random() < prob:
+        result = random_erasing_erp(result, rng=rng)
 
     return result

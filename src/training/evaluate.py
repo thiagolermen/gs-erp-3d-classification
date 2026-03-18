@@ -121,6 +121,92 @@ def evaluate_model(
 
 
 # ---------------------------------------------------------------------------
+# Test-Time Augmentation (TTA)
+# ---------------------------------------------------------------------------
+
+
+@torch.no_grad()
+def evaluate_model_tta(
+    model: nn.Module,
+    test_loader: DataLoader,
+    device: torch.device,
+    class_names: Optional[list[str]] = None,
+) -> dict:
+    """Evaluate with Test-Time Augmentation (TTA).
+
+    Averages softmax predictions over 5 views per test sample:
+      1. Original
+      2. Horizontal flip
+      3. Circular shift by W/4  (azimuthal 90 deg)
+      4. Circular shift by W/2  (azimuthal 180 deg)
+      5. Circular shift by 3W/4 (azimuthal 270 deg)
+
+    ERP is periodic horizontally — circular shifts are exact viewpoint
+    rotations and provide a free accuracy boost without retraining.
+
+    Args:
+        model:        Model with weights loaded, on *device*.
+        test_loader:  DataLoader for the test split.
+        device:       Target device.
+        class_names:  Optional class name strings.
+
+    Returns:
+        Same dict format as :func:`evaluate_model`.
+    """
+    model.eval()
+    all_preds:   list[int] = []
+    all_targets: list[int] = []
+
+    for inputs, targets in test_loader:
+        inputs  = inputs.to(device, non_blocking=True)
+        B, C, H, W = inputs.shape
+
+        views = [
+            inputs,                                    # original
+            inputs.flip(dims=[-1]),                    # horizontal flip
+            inputs.roll(shifts=W // 4,     dims=-1),   # 90 deg azimuth
+            inputs.roll(shifts=W // 2,     dims=-1),   # 180 deg azimuth
+            inputs.roll(shifts=3 * W // 4, dims=-1),   # 270 deg azimuth
+        ]
+
+        probs_sum: torch.Tensor | None = None
+        for view in views:
+            logits = model(view)
+            if probs_sum is None:
+                probs_sum = torch.zeros_like(logits)
+            probs_sum += torch.softmax(logits, dim=1)
+
+        preds = probs_sum.argmax(dim=1)  # type: ignore[union-attr]
+        all_preds.extend(preds.cpu().tolist())
+        all_targets.extend(targets.tolist())
+
+    preds_arr   = np.array(all_preds)
+    targets_arr = np.array(all_targets)
+
+    top1_acc = 100.0 * float((preds_arr == targets_arr).mean())
+
+    num_classes = len(class_names) if class_names else int(targets_arr.max()) + 1
+    per_class_acc: dict[int, float] = {}
+    for cls in range(num_classes):
+        mask = targets_arr == cls
+        if mask.sum() > 0:
+            per_class_acc[cls] = 100.0 * float((preds_arr[mask] == targets_arr[mask]).mean())
+
+    conf_mat = np.zeros((num_classes, num_classes), dtype=np.int64)
+    for t, p in zip(targets_arr.tolist(), preds_arr.tolist()):
+        conf_mat[int(t), int(p)] += 1
+
+    return {
+        "top1_acc":        top1_acc,
+        "per_class_acc":   per_class_acc,
+        "all_preds":       all_preds,
+        "all_targets":     all_targets,
+        "class_names":     class_names,
+        "confusion_matrix": conf_mat,
+    }
+
+
+# ---------------------------------------------------------------------------
 # High-level entry point
 # ---------------------------------------------------------------------------
 
@@ -128,6 +214,7 @@ def evaluate_model(
 def run_evaluation(
     config_path: Path,
     checkpoint_path: Path,
+    tta: bool = False,
 ) -> dict:
     """Load a model checkpoint and evaluate it on the official test split.
 
@@ -168,7 +255,11 @@ def run_evaluation(
     # ------------------------------------------------------------------
     # Evaluate
     # ------------------------------------------------------------------
-    results = evaluate_model(model, loaders["test"], device, class_names)
+    if tta:
+        logger.info("TTA enabled — averaging softmax over 5 views per sample")
+        results = evaluate_model_tta(model, loaders["test"], device, class_names)
+    else:
+        results = evaluate_model(model, loaders["test"], device, class_names)
 
     # ------------------------------------------------------------------
     # Report
@@ -262,8 +353,12 @@ def main() -> None:
         "--checkpoint", type=Path, required=True,
         help="Path to the model checkpoint (.pt file).",
     )
+    parser.add_argument(
+        "--tta", action="store_true",
+        help="Enable test-time augmentation (5 ERP views: original + flip + 3 circular shifts).",
+    )
     args = parser.parse_args()
-    run_evaluation(args.config, args.checkpoint)
+    run_evaluation(args.config, args.checkpoint, tta=args.tta)
 
 
 if __name__ == "__main__":

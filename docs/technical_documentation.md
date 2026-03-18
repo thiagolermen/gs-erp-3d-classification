@@ -83,19 +83,46 @@ automatically invalidates the cache.
 
 ---
 
-## 4. Data Augmentation
+## 4. Input Transforms and Data Augmentation
+
+### 4.1 Log1p Transform
+
+> `src/preprocessing/dataset.py` — config key `data.log1p_transform`
+
+Raw density ERP is sparse (mean≈0.057, 94% pixels below mean) and unbounded [0, ~14].
+When enabled, `erp = log1p(erp)` is applied before augmentation. This compresses the
+range to [0, ~2.7] and amplifies low-density boundary regions where discriminative
+surface information resides.
+
+### 4.2 Derived Feature Channels
+
+> `src/preprocessing/dataset.py` — config key `data.derived_channels`
+
+After the optional log1p, additional channels may be appended:
+
+| Channel | Formula | Shape | Purpose |
+|---|---|---|---|
+| `pseudo_depth` | density-weighted avg shell index per pixel, normalised to [0,1] | (1, H, W) | Approximate surface distance along each ray |
+| `mip` | max density across shells per pixel | (1, H, W) | Silhouette-like channel highlighting where density exists |
+
+With 8 density shells + pseudo_depth + mip, the model input becomes **(10, H, W)**.
+
+### 4.3 Augmentation
 
 > `src/preprocessing/augmentation.py` — HSDC §III-A / SWHDC §IV-A
 
-Applied to training samples only. Each primitive fires independently at P=0.15:
+Applied to training samples only (after log1p + derived channels). Each primitive
+fires independently at probability P (default 0.3):
 
 | Primitive | Parameters |
 |---|---|
+| Horizontal flip | P=0.5; equivalent to 180° azimuthal rotation |
 | 3D rotation | Rx, Ry ~ U[0°, 15°]; Rz ~ U[0°, 45°]; bilinear spherical remapping |
 | Gaussian blur | σ ~ U[0.1, 2.0]; applied channel-wise |
 | Gaussian noise | mean ~ U[0, 0.001]; std ~ U[0, 0.03]; additive |
+| Random erasing | Area ~ U[2%, 33%]; aspect ~ logU[0.3, 3.3]; patch zeroed (Zhong et al., 2020) |
 
-Augmentation is channel-agnostic — works for any number of ERP shells.
+Augmentation is channel-agnostic — works for any number of ERP channels.
 
 ---
 
@@ -113,18 +140,19 @@ See `docs/architecture.md` for diagrams and equations.
 
 > `src/training/train.py`, `src/training/scheduler.py`
 
-| Parameter | Value |
-|---|---|
-| Loss | CrossEntropyLoss |
-| Optimizer | Adam (β₁=0.9, β₂=0.999) |
-| Initial LR | 1e-4 |
-| LR decay | ×0.9 every 25 epochs, floor at 1e-7 |
-| Max epochs | 500 (HSDC) / 200 (SWHDC) |
-| Early stopping | patience = 25 epochs |
-| Gradient clipping | max_norm = 1.0 |
-| Batch size | 32 |
-| Mixed precision | AMP (CUDA only) |
-| Pretraining | None — trained from scratch |
+| Parameter | Value | Notes |
+|---|---|---|
+| Loss | CrossEntropyLoss | with label smoothing (0.1) and class weights |
+| Optimizer | AdamW (β₁=0.9, β₂=0.999) | decoupled weight decay 5e-4 |
+| Initial LR | 1e-4 | with 10-epoch linear warmup |
+| LR schedule | Cosine annealing | floor at 1e-6 |
+| Max epochs | 500 (HSDC) / 200 (SWHDC) | |
+| Early stopping | patience = 100 epochs | gives cosine schedule room |
+| Gradient clipping | max_norm = 1.0 | |
+| Batch size | 32 | |
+| Mixed precision | AMP (CUDA only) | |
+| MixUp | α = 0.4 (Zhang et al., 2018) | blends sample pairs to reduce overfitting |
+| Pretraining | None — trained from scratch | |
 
 **Outputs** per run (`experiments/<run_name>/`):
 
@@ -143,6 +171,17 @@ last_checkpoint.pt   — weights at final epoch
 > `src/training/evaluate.py`
 
 **Primary metric:** Top-1 overall accuracy (same as HSDC Table 2, SWHDC Table I).
+
+**Test-Time Augmentation (TTA):** When `--tta` is passed, the evaluator averages
+softmax predictions over 5 views per test sample:
+
+1. Original
+2. Horizontal flip
+3. Circular shift by W/4 (azimuthal 90°)
+4. Circular shift by W/2 (azimuthal 180°)
+5. Circular shift by 3W/4 (azimuthal 270°)
+
+ERP is periodic horizontally, so circular shifts are exact viewpoint rotations.
 
 **Saved artefacts:**
 - `test_results.json` — `oa` (fraction), `macc`, `params_m`
@@ -204,4 +243,13 @@ docs/                        ← this file + architecture.md
 
 [5] Wu et al. 3D ShapeNets: A Deep Representation for Volumetric Shapes.
     CVPR 2015. (ModelNet dataset)
+
+[6] Zhang et al. mixup: Beyond Empirical Risk Minimization. ICLR 2018.
+    (MixUp augmentation)
+
+[7] Zhong et al. Random Erasing Data Augmentation. AAAI 2020.
+    (Random erasing augmentation)
+
+[8] Loshchilov & Hutter. Decoupled Weight Decay Regularization. ICLR 2019.
+    (AdamW optimizer, cosine annealing)
 ```

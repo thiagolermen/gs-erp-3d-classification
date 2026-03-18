@@ -35,8 +35,10 @@ from src.preprocessing.augmentation import (
     rotate_erp_3d,
     gaussian_blur_erp,
     gaussian_noise_erp,
+    random_erasing_erp,
     augment,
 )
+from src.preprocessing.dataset import GaussianERPDataset
 
 
 # ---------------------------------------------------------------------------
@@ -442,3 +444,101 @@ class TestAugmentation:
         erp = rng.random((8, 32, 64)).astype(np.float32)
         result = augment(erp, prob=0.0, rng=np.random.default_rng(0))
         np.testing.assert_array_equal(result, erp)
+
+
+# ---------------------------------------------------------------------------
+# Random erasing tests
+# ---------------------------------------------------------------------------
+
+class TestRandomErasing:
+    @pytest.mark.parametrize("C", [1, 8, 10])
+    def test_shape_preserved(self, C: int) -> None:
+        rng = np.random.default_rng(0)
+        erp = rng.random((C, 32, 64)).astype(np.float32)
+        result = random_erasing_erp(erp, rng=np.random.default_rng(1))
+        assert result.shape == erp.shape
+        assert result.dtype == np.float32
+
+    def test_some_pixels_zeroed(self) -> None:
+        """At least some pixels must be zeroed."""
+        rng = np.random.default_rng(2)
+        erp = np.ones((8, 32, 64), dtype=np.float32)
+        result = random_erasing_erp(erp, rng=np.random.default_rng(3))
+        assert (result == 0.0).any(), "Random erasing should zero out some pixels"
+
+    def test_not_all_zeroed(self) -> None:
+        """The entire image should not be zeroed (max area = 33%)."""
+        rng = np.random.default_rng(4)
+        erp = np.ones((8, 64, 128), dtype=np.float32)
+        result = random_erasing_erp(erp, rng=np.random.default_rng(5))
+        assert (result != 0.0).any(), "Random erasing should not zero entire image"
+
+    def test_no_inplace_modification(self) -> None:
+        rng = np.random.default_rng(6)
+        erp = rng.random((8, 32, 64)).astype(np.float32)
+        erp_copy = erp.copy()
+        random_erasing_erp(erp, rng=np.random.default_rng(7))
+        np.testing.assert_array_equal(erp, erp_copy)
+
+
+# ---------------------------------------------------------------------------
+# Derived feature channel tests
+# ---------------------------------------------------------------------------
+
+class TestDerivedChannels:
+    """Tests for _compute_derived_channels in GaussianERPDataset."""
+
+    def _make_dataset_stub(
+        self, derived_channels: list[str] | None = None
+    ) -> GaussianERPDataset:
+        """Create a minimal dataset instance (no real data) for method testing."""
+        ds = object.__new__(GaussianERPDataset)
+        ds.n_shells = 8
+        ds._derived_channels = list(derived_channels) if derived_channels else []
+        return ds
+
+    def test_pseudo_depth_shape(self) -> None:
+        ds = self._make_dataset_stub(["pseudo_depth"])
+        erp = np.random.default_rng(0).random((8, 16, 32)).astype(np.float32)
+        result = ds._compute_derived_channels(erp)
+        assert result.shape == (9, 16, 32)
+
+    def test_mip_shape(self) -> None:
+        ds = self._make_dataset_stub(["mip"])
+        erp = np.random.default_rng(0).random((8, 16, 32)).astype(np.float32)
+        result = ds._compute_derived_channels(erp)
+        assert result.shape == (9, 16, 32)
+
+    def test_both_channels(self) -> None:
+        ds = self._make_dataset_stub(["pseudo_depth", "mip"])
+        erp = np.random.default_rng(0).random((8, 16, 32)).astype(np.float32)
+        result = ds._compute_derived_channels(erp)
+        assert result.shape == (10, 16, 32)
+
+    def test_pseudo_depth_range(self) -> None:
+        """Pseudo-depth should be in [0, 1]."""
+        ds = self._make_dataset_stub(["pseudo_depth"])
+        erp = np.random.default_rng(1).random((8, 16, 32)).astype(np.float32)
+        result = ds._compute_derived_channels(erp)
+        pd_channel = result[8]
+        assert pd_channel.min() >= 0.0
+        assert pd_channel.max() <= 1.0 + 1e-6
+
+    def test_mip_equals_max(self) -> None:
+        """MIP channel should equal max across shells."""
+        ds = self._make_dataset_stub(["mip"])
+        erp = np.random.default_rng(2).random((8, 16, 32)).astype(np.float32)
+        result = ds._compute_derived_channels(erp)
+        np.testing.assert_array_equal(result[8], erp.max(axis=0))
+
+    def test_no_derived_returns_unchanged(self) -> None:
+        ds = self._make_dataset_stub([])
+        erp = np.random.default_rng(3).random((8, 16, 32)).astype(np.float32)
+        result = ds._compute_derived_channels(erp)
+        np.testing.assert_array_equal(result, erp)
+
+    def test_unknown_channel_raises(self) -> None:
+        ds = self._make_dataset_stub(["unknown_feature"])
+        erp = np.random.default_rng(4).random((8, 16, 32)).astype(np.float32)
+        with pytest.raises(ValueError, match="Unknown derived channel"):
+            ds._compute_derived_channels(erp)

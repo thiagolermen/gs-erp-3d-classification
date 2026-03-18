@@ -168,6 +168,8 @@ class GaussianERPDataset(Dataset):
         val_fraction: float = 0.2,
         seed: int = 42,
         transform: Callable | None = None,
+        log1p_transform: bool = False,
+        derived_channels: list[str] | None = None,
     ) -> None:
         if split not in ("train", "val", "test"):
             raise ValueError(f"split must be 'train', 'val', or 'test'; got '{split}'")
@@ -189,6 +191,8 @@ class GaussianERPDataset(Dataset):
         self.val_fraction = val_fraction
         self.seed         = seed
         self.transform    = transform
+        self._log1p_transform = log1p_transform
+        self._derived_channels = list(derived_channels) if derived_channels else []
 
         self.samples = self._make_sample_list()
 
@@ -213,23 +217,81 @@ class GaussianERPDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, int]:
         """Return (erp_tensor, label) for sample *idx*.
 
-        erp_tensor: (N_shells, H, W) float32 torch.Tensor.
+        erp_tensor: (C, H, W) float32 torch.Tensor where C = N_shells + n_derived.
         label:      int — class index.
         """
         ply_path, label = self.samples[idx]
 
         erp = self._load_or_compute(ply_path)  # (N_shells, H, W) float32
 
+        # Log1p transform — compresses [0, ~14] → [0, ~2.7], amplifies
+        # low-density surface boundaries where discriminative signal lives
+        if self._log1p_transform:
+            erp = np.log1p(erp)
+
+        # Derived feature channels — computed from (possibly log1p'd) density
+        if self._derived_channels:
+            erp = self._compute_derived_channels(erp)
+
         # Augmentation on training split only — HSDC §III-A / SWHDC §IV-A
         if self._do_augment:
             erp = augment(erp, prob=self._augment_prob, rng=None)  # fresh entropy each call → varies per epoch
 
-        tensor = torch.from_numpy(erp.copy())  # (N_shells, H, W) float32
+        tensor = torch.from_numpy(erp.copy())  # (C, H, W) float32
 
         if self.transform is not None:
             tensor = self.transform(tensor)
 
         return tensor, label
+
+    # ------------------------------------------------------------------
+    # Derived feature channels
+    # ------------------------------------------------------------------
+
+    def _compute_derived_channels(self, erp: np.ndarray) -> np.ndarray:
+        """Append derived feature channels to the density ERP.
+
+        Supported channels (selected via ``self._derived_channels``):
+
+        - ``pseudo_depth``: density-weighted average shell index per pixel,
+          normalised to [0, 1].  Approximates the distance to the dominant
+          surface along each ray.
+        - ``mip``: maximum intensity projection across shells — a silhouette-
+          like representation highlighting where density exists.
+
+        Args:
+            erp: (N_shells, H, W) float32 density ERP (may be log1p'd).
+
+        Returns:
+            (N_shells + n_derived, H, W) float32 array.
+        """
+        extras: list[np.ndarray] = []
+        N = erp.shape[0]
+
+        for name in self._derived_channels:
+            if name == "pseudo_depth":
+                # Density-weighted average shell index per pixel → (1, H, W)
+                shell_idx = np.arange(N, dtype=np.float32).reshape(N, 1, 1)
+                density_sum = erp.sum(axis=0, keepdims=True).clip(min=1e-8)
+                pseudo_depth = (erp * shell_idx).sum(axis=0, keepdims=True) / density_sum
+                if N > 1:
+                    pseudo_depth = pseudo_depth / (N - 1)  # normalise to [0, 1]
+                extras.append(pseudo_depth)
+
+            elif name == "mip":
+                # Maximum intensity projection across shells → (1, H, W)
+                mip = erp.max(axis=0, keepdims=True)
+                extras.append(mip)
+
+            else:
+                raise ValueError(
+                    f"Unknown derived channel '{name}'. "
+                    "Supported: 'pseudo_depth', 'mip'."
+                )
+
+        if extras:
+            return np.concatenate([erp, *extras], axis=0)
+        return erp
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -431,6 +493,13 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
 
     augment_prob = float(data_cfg.get("augment_prob", 0.3))
 
+    # Input transform parameters
+    log1p_transform = bool(data_cfg.get("log1p_transform", False))
+    derived_channels_raw = data_cfg.get("derived_channels", None)
+    derived_channels: list[str] | None = (
+        list(derived_channels_raw) if derived_channels_raw else None
+    )
+
     # DataLoader parameters
     batch_size   = int(data_cfg.get("batch_size",  32))
     num_workers  = int(data_cfg.get("num_workers",  4))
@@ -465,6 +534,8 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
             augment_prob=augment_prob,
             val_fraction=val_fraction,
             seed=seed,
+            log1p_transform=log1p_transform,
+            derived_channels=derived_channels,
         )
         shuffle = split == "train"
         loaders[split] = DataLoader(
