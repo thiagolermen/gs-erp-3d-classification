@@ -371,7 +371,35 @@ def compute_radiance_field_erp(
     else:
         dev = None
 
-    if use_torch:
+    if use_torch and dev is not None and dev.type == "cuda":
+        import torch as _torch
+        # Try GPU with progressively smaller batch sizes, then fall back to CPU.
+        bs = batch_size
+        while bs >= 64:
+            try:
+                _torch.cuda.empty_cache()
+                result = _compute_erp_torch(
+                    gs_precomp, centroid, ray_dirs, shell_radii,
+                    H, W, cutoff_sigma, bs, dev,
+                )
+                return result
+            except _torch.cuda.OutOfMemoryError:
+                _torch.cuda.empty_cache()
+                bs //= 2
+                import logging
+                logging.getLogger(__name__).warning(
+                    "CUDA OOM with batch_size=%d, retrying with %d", bs * 2, bs,
+                )
+        # All GPU attempts failed — fall back to CPU numpy
+        import logging
+        logging.getLogger(__name__).warning(
+            "CUDA OOM persists at batch_size=%d; falling back to CPU numpy.", bs,
+        )
+        return _compute_erp_numpy(
+            gs_precomp, centroid, ray_dirs, shell_radii,
+            H, W, cutoff_sigma, batch_size,
+        )
+    elif use_torch:
         return _compute_erp_torch(
             gs_precomp, centroid, ray_dirs, shell_radii,
             H, W, cutoff_sigma, batch_size, dev,
@@ -497,15 +525,22 @@ def _compute_erp_torch(
 
             mahal  = r_s * A_c - b_c.unsqueeze(1)                   # (M, P, 3)
             mahal2 = (mahal * mahal).sum(dim=-1)                     # (M, P)
+            del mahal
 
             contrib = torch.where(
                 mahal2 < cutoff2,
                 op_c.unsqueeze(1) * torch.exp(-0.5 * mahal2),
                 torch.zeros_like(mahal2),
             )
+            del mahal2
             erp_acc[s_idx, p0:p1] += contrib.sum(dim=0)
+            del contrib, A_c, b_c, op_c
 
-    return erp_acc.reshape(n_shells, H, W).cpu().numpy()
+        del A_all
+
+    result = erp_acc.reshape(n_shells, H, W).cpu().numpy()
+    del erp_acc, xyz, opacity, Rt_scaled, r_dist, max_scale, dirs_t, b
+    return result
 
 
 # ---------------------------------------------------------------------------
