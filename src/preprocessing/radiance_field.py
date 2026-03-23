@@ -641,7 +641,8 @@ def gaussian_ply_to_erp(
                 min_opacity, int((~mask).sum()), len(mask), ply_path,
             )
         else:
-            gs = {k: v[mask] for k, v in gs.items()}
+            gs = {k: (v[mask] if isinstance(v, np.ndarray) else int(mask.sum()))
+                  for k, v in gs.items()}
 
     centroid   = compute_centroid(gs["xyz"], gs["opacity"])
     ray_dirs   = build_ray_directions(H, W)           # (H*W, 3)
