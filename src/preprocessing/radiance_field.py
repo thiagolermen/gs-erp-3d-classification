@@ -138,8 +138,8 @@ def build_ray_directions(H: int, W: int) -> np.ndarray:
 def compute_shell_radii(
     r_dist: np.ndarray,
     n_shells: int,
-    r_near_pct: float = 5.0,
-    r_far_pct: float = 95.0,
+    r_near_pct: float = 10.0,
+    r_far_pct: float = 90.0,
 ) -> np.ndarray:
     """Compute EgoNeRF-style exponential radial shell spacing.
 
@@ -155,8 +155,8 @@ def compute_shell_radii(
         r_dist:    (N,) float array — distance of each Gaussian centre from
                    the object centroid.
         n_shells:  Number of concentric shells (= number of ERP channels).
-        r_near_pct: Percentile of r_dist to use as r_near (default 5.0).
-        r_far_pct:  Percentile of r_dist to use as r_far  (default 95.0).
+        r_near_pct: Percentile of r_dist to use as r_near (default 10.0).
+        r_far_pct:  Percentile of r_dist to use as r_far  (default 90.0).
 
     Returns:
         radii: (n_shells,) float32 — shell radii in ascending order.
@@ -318,6 +318,7 @@ def compute_radiance_field_erp(
     cutoff_sigma: float = 3.0,
     batch_size: int = 4096,
     device: Optional[str] = None,
+    add_color: bool = False,
 ) -> np.ndarray:
     """Evaluate the 3DGS radiance field at N concentric sphere shells.
 
@@ -354,9 +355,13 @@ def compute_radiance_field_erp(
         batch_size:  Pixels per processing chunk (default 4096).
         device:      Torch device string ('cuda', 'cpu') or None for auto-detect.
                      When None, CUDA is used if available, else CPU numpy.
+        add_color:   If True, also accumulates opacity-weighted RGB in a single
+                     pass and appends 3 colour channels after the density shells.
+                     Returns (N_shells + 3, H, W) when True (default False).
 
     Returns:
-        erp: (N_shells, H, W) float32 — raw accumulated density per shell.
+        erp: (N_shells, H, W) float32 if add_color=False;
+             (N_shells + 3, H, W) float32 if add_color=True — density first, RGB last.
     """
     # ── resolve device ───────────────────────────────────────────────────────
     use_torch = _TORCH_AVAILABLE
@@ -380,7 +385,7 @@ def compute_radiance_field_erp(
                 _torch.cuda.empty_cache()
                 result = _compute_erp_torch(
                     gs_precomp, centroid, ray_dirs, shell_radii,
-                    H, W, cutoff_sigma, bs, dev,
+                    H, W, cutoff_sigma, bs, dev, add_color=add_color,
                 )
                 return result
             except _torch.cuda.OutOfMemoryError:
@@ -397,16 +402,16 @@ def compute_radiance_field_erp(
         )
         return _compute_erp_numpy(
             gs_precomp, centroid, ray_dirs, shell_radii,
-            H, W, cutoff_sigma, batch_size,
+            H, W, cutoff_sigma, batch_size, add_color=add_color,
         )
     elif use_torch:
         return _compute_erp_torch(
             gs_precomp, centroid, ray_dirs, shell_radii,
-            H, W, cutoff_sigma, batch_size, dev,
+            H, W, cutoff_sigma, batch_size, dev, add_color=add_color,
         )
     return _compute_erp_numpy(
         gs_precomp, centroid, ray_dirs, shell_radii,
-        H, W, cutoff_sigma, batch_size,
+        H, W, cutoff_sigma, batch_size, add_color=add_color,
     )
 
 
@@ -419,10 +424,12 @@ def _compute_erp_numpy(
     W: int,
     cutoff_sigma: float,
     batch_size: int,
+    add_color: bool = False,
 ) -> np.ndarray:
     """CPU numpy implementation — pixel-chunk tiling."""
     xyz       = gs_precomp["xyz"]        # (N, 3)
     opacity   = gs_precomp["opacity"]    # (N,)
+    rgb       = gs_precomp["rgb"]        # (N, 3)  — only used when add_color=True
     Rt_scaled = gs_precomp["Rt_scaled"]  # (N, 3, 3)
     r_dist    = gs_precomp["r_dist"]     # (N,)
     max_scale = gs_precomp["max_scale"]  # (N,)
@@ -437,6 +444,7 @@ def _compute_erp_numpy(
     b     = np.einsum("ikj,ij->ik", Rt_scaled, delta)     # (N, 3)
 
     erp_acc = np.zeros((len(shell_radii), n_pixels), dtype=np.float32)
+    color_acc = np.zeros((3, n_pixels), dtype=np.float32) if add_color else None
 
     for p0 in range(0, n_pixels, batch_size):
         p1          = min(p0 + batch_size, n_pixels)
@@ -469,8 +477,17 @@ def _compute_erp_numpy(
                 0.0,
             )
             erp_acc[s_idx, p0:p1] += contrib.sum(axis=0)
+            if add_color and color_acc is not None:
+                rgb_c = rgb[cull]  # (M, 3)
+                color_acc[:, p0:p1] += np.einsum("mp,mc->cp", contrib, rgb_c)
 
-    return erp_acc.reshape(len(shell_radii), H, W)
+    density_erp = erp_acc.reshape(len(shell_radii), H, W)
+    if not add_color or color_acc is None:
+        return density_erp
+    # Normalize color by total accumulated density
+    total_density = erp_acc.sum(0, keepdims=True)  # (1, n_pixels)
+    color_erp = (color_acc / (total_density + 1e-8)).reshape(3, H, W)
+    return np.concatenate([density_erp, color_erp], axis=0)  # (N_shells+3, H, W)
 
 
 def _compute_erp_torch(
@@ -483,6 +500,7 @@ def _compute_erp_torch(
     cutoff_sigma: float,
     batch_size: int,
     dev: "torch.device",  # noqa: F821
+    add_color: bool = False,
 ) -> np.ndarray:
     """GPU/CPU torch implementation — pixel-chunk tiling."""
     import torch
@@ -494,6 +512,7 @@ def _compute_erp_torch(
     max_scale = torch.from_numpy(gs_precomp["max_scale"]).to(dev)  # (N,)
     dirs_t    = torch.from_numpy(ray_dirs).to(dev)                  # (H*W, 3)
     centroid_t = torch.from_numpy(centroid.astype(np.float32)).to(dev)
+    rgb_t     = torch.from_numpy(gs_precomp["rgb"]).to(dev) if add_color else None  # (N, 3)
 
     n_pixels = H * W
     cutoff2  = float(cutoff_sigma ** 2)
@@ -503,7 +522,8 @@ def _compute_erp_torch(
     delta = xyz - centroid_t                                        # (N, 3)
     b     = torch.einsum("ikj,ij->ik", Rt_scaled, delta)           # (N, 3)
 
-    erp_acc = torch.zeros((n_shells, n_pixels), device=dev, dtype=torch.float32)
+    erp_acc   = torch.zeros((n_shells, n_pixels), device=dev, dtype=torch.float32)
+    color_acc = torch.zeros((3, n_pixels), device=dev, dtype=torch.float32) if add_color else None
 
     for p0 in range(0, n_pixels, batch_size):
         p1         = min(p0 + batch_size, n_pixels)
@@ -534,13 +554,22 @@ def _compute_erp_torch(
             )
             del mahal2
             erp_acc[s_idx, p0:p1] += contrib.sum(dim=0)
+            if add_color and color_acc is not None and rgb_t is not None:
+                rgb_c = rgb_t[cull]  # (M, 3)
+                color_acc[:, p0:p1] += torch.einsum("mp,mc->cp", contrib, rgb_c)
             del contrib, A_c, b_c, op_c
 
         del A_all
 
-    result = erp_acc.reshape(n_shells, H, W).cpu().numpy()
-    del erp_acc, xyz, opacity, Rt_scaled, r_dist, max_scale, dirs_t, b
-    return result
+    density_erp = erp_acc.reshape(n_shells, H, W).cpu().numpy()
+    if not add_color or color_acc is None:
+        del erp_acc, xyz, opacity, Rt_scaled, r_dist, max_scale, dirs_t, b
+        return density_erp
+    # Normalize color by total accumulated density
+    total_density = erp_acc.sum(0, keepdim=True)  # (1, n_pixels)
+    color_erp = (color_acc / (total_density + 1e-8)).reshape(3, H, W).cpu().numpy()
+    del erp_acc, color_acc, xyz, opacity, Rt_scaled, r_dist, max_scale, dirs_t, b
+    return np.concatenate([density_erp, color_erp], axis=0)  # (N_shells+3, H, W)
 
 
 # ---------------------------------------------------------------------------
@@ -554,8 +583,10 @@ def gaussian_ply_to_erp(
     W: int = 512,
     cutoff_sigma: float = 3.0,
     batch_size: int = 4096,
-    r_near_pct: float = 5.0,
-    r_far_pct: float = 95.0,
+    r_near_pct: float = 10.0,
+    r_far_pct: float = 90.0,
+    min_opacity: float = 0.05,
+    add_color: bool = False,
     device: Optional[str] = None,
 ) -> np.ndarray:
     """Full pipeline: PLY file -> (N_shells, H, W) radiance field ERP.
@@ -574,20 +605,44 @@ def gaussian_ply_to_erp(
         W:           ERP width  in pixels (default 512).
         cutoff_sigma: Gaussian truncation radius in max_scale units (default 3.0).
         batch_size:  Pixels per processing chunk (default 4096).
-        r_near_pct:  Percentile of Gaussian distances used as r_near (default 5).
-        r_far_pct:   Percentile of Gaussian distances used as r_far  (default 95).
+        r_near_pct:  Percentile of Gaussian distances used as r_near (default 10).
+        r_far_pct:   Percentile of Gaussian distances used as r_far  (default 90).
+        min_opacity: Minimum opacity threshold for filtering floater Gaussians
+                     before computing centroid and shell radii. Gaussians with
+                     opacity <= min_opacity are discarded. Default: 0.05.
+        add_color:   If True, appends 3 opacity-weighted RGB channels after the
+                     density shells. Returns (N_shells + 3, H, W) instead of
+                     (N_shells, H, W). Default: False.
         device:      Torch device ('cuda', 'cpu') or None (auto-detect).
 
     Returns:
-        erp: (N_shells, H, W) float32 — radiance field density ERP.
+        erp: (N_shells, H, W) float32 if add_color=False;
+             (N_shells + 3, H, W) float32 if add_color=True — density first, RGB last.
 
     Raises:
         FileNotFoundError: If *ply_path* does not exist.
         ValueError:        If the PLY file is malformed.
     """
+    import logging as _logging
     ply_path = Path(ply_path)
 
-    gs         = load_gaussian_ply(ply_path)
+    gs = load_gaussian_ply(ply_path)
+
+    # Filter low-opacity floater Gaussians before computing centroid and shells.
+    # Floaters contaminate the opacity-weighted centroid and inflate r_far,
+    # causing outer shells to land in empty space.
+    if min_opacity > 0.0:
+        mask = gs["opacity"] > min_opacity
+        if mask.sum() < 10:
+            # Too few Gaussians after filtering — use all as fallback
+            _logging.getLogger(__name__).warning(
+                "min_opacity=%.3f filtered %d/%d Gaussians in '%s'; "
+                "using all Gaussians as fallback.",
+                min_opacity, int((~mask).sum()), len(mask), ply_path,
+            )
+        else:
+            gs = {k: v[mask] for k, v in gs.items()}
+
     centroid   = compute_centroid(gs["xyz"], gs["opacity"])
     ray_dirs   = build_ray_directions(H, W)           # (H*W, 3)
     gs_precomp = precompute_gaussian_params(gs, centroid)
@@ -608,4 +663,5 @@ def gaussian_ply_to_erp(
         cutoff_sigma=cutoff_sigma,
         batch_size=batch_size,
         device=device,
+        add_color=add_color,
     )

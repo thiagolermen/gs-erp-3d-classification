@@ -51,6 +51,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.models.backbones.resnet_hsdc import HSDCNet, SWHDCResNet
+from src.preprocessing.augmentation import cutmix_erp
 from src.preprocessing.dataset import build_dataloaders
 from src.training.scheduler import EarlyStopping, build_optimizer, build_lr_scheduler
 
@@ -162,6 +163,51 @@ def mixup_data(
 
 
 # ---------------------------------------------------------------------------
+# CutMix batch-level wrapper (Yun et al., ICCV 2019)
+# ---------------------------------------------------------------------------
+
+
+def cutmix_data(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    alpha: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+    """Batch-level CutMix wrapper calling augmentation.cutmix_erp per sample pair.
+
+    Pastes a rectangular crop from a randomly permuted batch into the primary
+    batch.  The horizontal axis wraps circularly (valid ERP symmetry).  Returns
+    the mixed batch and the mean kept-fraction lambda across the batch.
+
+    Args:
+        x:     (B, C, H, W) input batch.
+        y:     (B,) integer labels.
+        alpha: Beta distribution parameter passed to :func:`cutmix_erp`.
+
+    Returns:
+        (x_mixed, y_a, y_b, lam_avg) — mixed inputs, primary labels, donor
+        labels, and mean fraction of the primary sample retained.
+
+    References:
+        Yun et al., "CutMix: Training Strategy that Makes Use of Sample
+        Mixing for Strong Classifiers", ICCV 2019.
+    """
+    if alpha <= 0.0:
+        return x, y, y, 1.0
+    B = x.shape[0]
+    index = torch.randperm(B, device=x.device)
+    x_np = x.cpu().numpy()
+    mixed_list: list[np.ndarray] = []
+    lam_list:   list[float]      = []
+    for i in range(B):
+        mixed, lam = cutmix_erp(x_np[i], x_np[index[i].item()], alpha=alpha)
+        mixed_list.append(mixed)
+        lam_list.append(lam)
+    lam_avg = float(np.mean(lam_list))
+    x_mixed = torch.from_numpy(np.stack(mixed_list)).to(x.device)
+    return x_mixed, y, y[index], lam_avg
+
+
+# ---------------------------------------------------------------------------
 # Training / validation epoch
 # ---------------------------------------------------------------------------
 
@@ -176,11 +222,12 @@ def train_one_epoch(
     grad_clip: float,
     use_amp: bool = True,
     mixup_alpha: float = 0.0,
+    cutmix_alpha: float = 0.0,
 ) -> tuple[float, float]:
     """Run one full training epoch.
 
     Applies:
-    - Optional MixUp augmentation (Zhang et al., 2018)
+    - Optional MixUp / CutMix augmentation (50/50 alternation when both > 0)
     - Forward pass (with optional AMP autocast)
     - CrossEntropyLoss (with optional label smoothing already baked into
       *criterion*)
@@ -189,15 +236,16 @@ def train_one_epoch(
     - Optimizer step
 
     Args:
-        model:       Model in ``train()`` mode.
-        loader:      Training :class:`DataLoader`.
-        criterion:   Loss function (e.g. ``nn.CrossEntropyLoss``).
-        optimizer:   Configured optimizer.
-        scaler:      AMP :class:`GradScaler` (no-op when ``enabled=False``).
-        device:      Target device.
-        grad_clip:   Max gradient norm for :func:`torch.nn.utils.clip_grad_norm_`.
-        use_amp:     Enable FP16 mixed-precision (CUDA only).
-        mixup_alpha: Beta distribution parameter for MixUp.  0 disables MixUp.
+        model:        Model in ``train()`` mode.
+        loader:       Training :class:`DataLoader`.
+        criterion:    Loss function (e.g. ``nn.CrossEntropyLoss``).
+        optimizer:    Configured optimizer.
+        scaler:       AMP :class:`GradScaler` (no-op when ``enabled=False``).
+        device:       Target device.
+        grad_clip:    Max gradient norm for :func:`torch.nn.utils.clip_grad_norm_`.
+        use_amp:      Enable FP16 mixed-precision (CUDA only).
+        mixup_alpha:  Beta distribution parameter for MixUp.  0 disables MixUp.
+        cutmix_alpha: Beta distribution parameter for CutMix.  0 disables CutMix.
 
     Returns:
         Tuple ``(mean_loss, accuracy_percent)`` over all batches.
@@ -205,6 +253,7 @@ def train_one_epoch(
     References:
         HSDC paper §III-A — gradient clipping, AMP
         Zhang et al., "mixup: Beyond Empirical Risk Minimization", ICLR 2018
+        Yun et al., "CutMix", ICCV 2019
     """
     model.train()
     total_loss    = 0.0
@@ -218,8 +267,15 @@ def train_one_epoch(
 
         optimizer.zero_grad(set_to_none=True)
 
-        if mixup_alpha > 0.0:
-            inputs, targets_a, targets_b, lam = mixup_data(inputs, targets, mixup_alpha)
+        use_mix = mixup_alpha > 0.0 or cutmix_alpha > 0.0
+        if use_mix:
+            if mixup_alpha > 0.0 and cutmix_alpha > 0.0:
+                fn = mixup_data if random.random() < 0.5 else cutmix_data
+                inputs, targets_a, targets_b, lam = fn(inputs, targets, mixup_alpha)
+            elif mixup_alpha > 0.0:
+                inputs, targets_a, targets_b, lam = mixup_data(inputs, targets, mixup_alpha)
+            else:
+                inputs, targets_a, targets_b, lam = cutmix_data(inputs, targets, cutmix_alpha)
             with torch.cuda.amp.autocast(enabled=use_amp):
                 logits = model(inputs)
                 loss = lam * criterion(logits, targets_a) + (1.0 - lam) * criterion(logits, targets_b)
@@ -534,7 +590,8 @@ def run_training(config_path: Path) -> dict[str, Any]:
     grad_clip   = float(train_cfg.get("gradient_clip_norm", 1.0))
     max_epochs  = int(train_cfg["max_epochs"])
     save_every  = int(cfg.get("output", {}).get("save_every_n_epochs", 0))
-    mixup_alpha = float(train_cfg.get("mixup_alpha", 0.0))
+    mixup_alpha  = float(train_cfg.get("mixup_alpha", 0.0))
+    cutmix_alpha = float(train_cfg.get("cutmix_alpha", 0.0))
 
     # ------------------------------------------------------------------
     # 9. AMP
@@ -572,6 +629,7 @@ def run_training(config_path: Path) -> dict[str, Any]:
         train_loss, train_acc = train_one_epoch(
             model, loaders["train"], criterion, optimizer, scaler,
             device, grad_clip, use_amp, mixup_alpha=mixup_alpha,
+            cutmix_alpha=cutmix_alpha,
         )
 
         # Validate

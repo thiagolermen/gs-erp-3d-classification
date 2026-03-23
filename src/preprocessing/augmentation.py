@@ -31,6 +31,8 @@ References:
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.spatial.transform import Rotation
@@ -264,6 +266,68 @@ def random_horizontal_flip_erp(erp: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# CutMix — two-sample augmentation
+# ---------------------------------------------------------------------------
+
+def cutmix_erp(
+    erp_a: np.ndarray,
+    erp_b: np.ndarray,
+    alpha: float = 0.4,
+    rng: np.random.Generator | None = None,
+) -> tuple[np.ndarray, float]:
+    """CutMix augmentation adapted for ERP images (Yun et al., ICCV 2019).
+
+    Pastes a rectangular crop from *erp_b* into *erp_a*.  The horizontal axis
+    wraps circularly (valid ERP symmetry — the left and right edges connect).
+    Returns the mixed image and the fraction of *erp_a* that was kept.
+
+    Unlike the single-sample primitives above, CutMix requires two samples and
+    is applied at the batch level in the training loop (see train.py).
+
+    Args:
+        erp_a:  (C, H, W) float32 — primary sample (kept pixels).
+        erp_b:  (C, H, W) float32 — donor sample (pasted crop), same shape.
+        alpha:  Beta distribution parameter; 0 → identity (no cut).
+        rng:    Optional numpy Generator for reproducibility.
+
+    Returns:
+        (mixed, lam_adj) where mixed is (C, H, W) float32 and
+        lam_adj = 1 - (cut_h * cut_w) / (H * W) — fraction of erp_a kept.
+
+    References:
+        Yun et al., "CutMix: Training Strategy that Makes Use of Sample
+        Mixing for Strong Classifiers", ICCV 2019.
+    """
+    if alpha <= 0.0:
+        return erp_a.copy(), 1.0
+
+    _rng = rng if rng is not None else np.random.default_rng()
+    lam  = float(_rng.beta(alpha, alpha))
+    C, H, W = erp_a.shape
+
+    cut_ratio = math.sqrt(1.0 - lam)
+    cut_h = max(1, int(H * cut_ratio))
+    cut_w = max(1, int(W * cut_ratio))
+
+    cy = int(_rng.integers(0, H - cut_h + 1))
+    cx = int(_rng.integers(0, W))          # any start column (circular wrap)
+
+    mixed = erp_a.copy()
+    if cx + cut_w <= W:
+        mixed[:, cy:cy + cut_h, cx:cx + cut_w] = \
+            erp_b[:, cy:cy + cut_h, cx:cx + cut_w]
+    else:
+        # Wrap-around: paste two strips
+        w1 = W - cx
+        w2 = cut_w - w1
+        mixed[:, cy:cy + cut_h, cx:W]  = erp_b[:, cy:cy + cut_h, cx:W]
+        mixed[:, cy:cy + cut_h, 0:w2]  = erp_b[:, cy:cy + cut_h, 0:w2]
+
+    lam_adj = 1.0 - (cut_h * cut_w) / float(H * W)
+    return mixed, lam_adj
+
+
+# ---------------------------------------------------------------------------
 # Composite augmentation
 # ---------------------------------------------------------------------------
 
@@ -306,6 +370,7 @@ def augment(
     # --- Horizontal flip (azimuthal rotation of 180°) ---
     if rng.random() < flip_prob:
         result = random_horizontal_flip_erp(result)
+
 
     # --- 3-D rotation ---
     if rng.random() < prob:

@@ -160,8 +160,10 @@ class GaussianERPDataset(Dataset):
         W: int = 512,
         cutoff_sigma: float = 3.0,
         batch_size_rf: int = 128,
-        r_near_pct: float = 5.0,
-        r_far_pct: float = 95.0,
+        r_near_pct: float = 10.0,
+        r_far_pct: float = 90.0,
+        min_opacity: float = 0.05,
+        add_color_erp: bool = False,
         cache_dir: Path | None = None,
         augment_train: bool = True,
         augment_prob: float = 0.3,
@@ -185,6 +187,8 @@ class GaussianERPDataset(Dataset):
         self.batch_size_rf = batch_size_rf
         self.r_near_pct   = r_near_pct
         self.r_far_pct    = r_far_pct
+        self.min_opacity  = min_opacity
+        self.add_color_erp = add_color_erp
         self.cache_dir    = Path(cache_dir) if cache_dir is not None else None
         self._do_augment  = augment_train and (split == "train")
         self._augment_prob = augment_prob
@@ -359,6 +363,8 @@ class GaussianERPDataset(Dataset):
             f"ns{self.n_shells}_H{self.H}_W{self.W}"
             f"_c{self.cutoff_sigma}"
             f"_p{self.r_near_pct}-{self.r_far_pct}"
+            f"_op{self.min_opacity}"
+            f"{'_rgb' if self.add_color_erp else ''}"
         )
         return self.cache_dir / subdir_name
 
@@ -396,7 +402,8 @@ class GaussianERPDataset(Dataset):
         if cache_path is not None and cache_path.exists():
             erp = np.load(str(cache_path))
             # Validate cached shape matches current parameters
-            expected = (self.n_shells, self.H, self.W)
+            n_color = 3 if self.add_color_erp else 0
+            expected = (self.n_shells + n_color, self.H, self.W)
             if erp.shape == expected:
                 return erp
             logger.warning(
@@ -416,6 +423,8 @@ class GaussianERPDataset(Dataset):
             batch_size=self.batch_size_rf,
             r_near_pct=self.r_near_pct,
             r_far_pct=self.r_far_pct,
+            min_opacity=self.min_opacity,
+            add_color=self.add_color_erp,
             device=None,  # auto-detect: CUDA if available, else CPU
         )
 
@@ -484,8 +493,10 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
     H            = int(data_cfg.get("erp_height", 256))
     W            = int(data_cfg.get("erp_width",  512))
     cutoff_sigma = float(data_cfg.get("cutoff_sigma", 3.0))
-    r_near_pct   = float(data_cfg.get("r_near_pct",  5.0))
-    r_far_pct    = float(data_cfg.get("r_far_pct",  95.0))
+    r_near_pct    = float(data_cfg.get("r_near_pct",  10.0))
+    r_far_pct     = float(data_cfg.get("r_far_pct",   90.0))
+    min_opacity   = float(data_cfg.get("min_opacity",  0.05))
+    add_color_erp = bool(data_cfg.get("add_color_erp", False))
     batch_size_rf = int(data_cfg.get("batch_size_rf", 4096))
 
     cache_dir_raw = data_cfg.get("cache_dir", None)
@@ -529,6 +540,8 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
             batch_size_rf=batch_size_rf,
             r_near_pct=r_near_pct,
             r_far_pct=r_far_pct,
+            min_opacity=min_opacity,
+            add_color_erp=add_color_erp,
             cache_dir=cache_dir,
             augment_train=True,
             augment_prob=augment_prob,
