@@ -27,6 +27,9 @@ RUN_NAME   ?=
 TOKEN      ?=
 DATASET    ?= mn10
 MN10_ONLY  ?=
+CATEGORIES ?=
+N_SHELLS   ?= 12
+ADD_COLOR  ?= 1
 
 GS_ROOT    := gs_data/modelsplat/modelsplat_ply
 
@@ -45,13 +48,16 @@ help:
 	@printf "  %-38s %s\n" "test"                   "Run pytest unit tests"
 	@echo ""
 	@printf "  \033[33m%-38s\033[0m %s\n" "[ Data ]" ""
-	@printf "  %-38s %s\n" "download TOKEN=<token>" "Download ModelSplat from HuggingFace"
+	@printf "  %-38s %s\n" "download TOKEN=<token>" "Download all ModelSplat categories (~40 GB)"
 	@printf "  %-38s %s\n" "download TOKEN=<token> MN10_ONLY=1" "ModelNet10 only (~15 GB)"
+	@printf "  %-38s %s\n" "download-extra TOKEN=<token>" "Download car, airplane, flower_pot"
 	@echo ""
 	@printf "  \033[33m%-38s\033[0m %s\n" "[ Preprocessing ]" ""
-	@printf "  %-38s %s\n" "preprocess"             "Generate ERP cache for mn10 + mn40"
+	@printf "  %-38s %s\n" "preprocess"             "New cache: mn10+mn40, 12 shells, RGB color"
 	@printf "  %-38s %s\n" "preprocess DATASET=mn10" "ModelNet10 only"
 	@printf "  %-38s %s\n" "preprocess DATASET=mn40" "ModelNet40 only"
+	@printf "  %-38s %s\n" "preprocess CATEGORIES='car airplane'" "Specific categories only"
+	@printf "  %-38s %s\n" "preprocess N_SHELLS=8 ADD_COLOR=0" "Legacy 8-shell no-color cache"
 	@echo ""
 	@printf "  \033[33m%-38s\033[0m %s\n" "[ Training ]" ""
 	@printf "  %-38s %s\n" "train CONFIG=<yaml>"    "Train a single experiment"
@@ -108,36 +114,62 @@ endif
 		--token $(TOKEN) \
 		$(if $(MN10_ONLY),--mn10-only,)
 
+.PHONY: download-extra
+download-extra:
+ifndef TOKEN
+	$(error TOKEN is required — usage: make download-extra TOKEN=<huggingface_token>)
+endif
+	$(COMPOSE) run --rm $(SVC) python scripts/download_modelsplat.py \
+		--token $(TOKEN) \
+		--categories car airplane flower_pot
+
 # =============================================================================
 # Preprocessing
 # =============================================================================
+
+# Internal helper: resolve cache dir name from N_SHELLS and ADD_COLOR
+_CACHE_SUFFIX  = $(if $(filter 0,$(ADD_COLOR)),radiance_field,radiance_field_n$(N_SHELLS)_rgb)
+_COLOR_FLAG    = $(if $(filter 0,$(ADD_COLOR)),,--add_color)
+_CATS_FLAG     = $(if $(CATEGORIES),--categories $(CATEGORIES),--dataset $(DATASET))
+_CACHE_MN10    = data/processed/modelnet10/$(_CACHE_SUFFIX)
+_CACHE_MN40    = data/processed/modelnet40/$(_CACHE_SUFFIX)
+
 .PHONY: preprocess
 preprocess:
+ifdef CATEGORIES
+	@echo "Preprocessing categories: $(CATEGORIES)  (N_SHELLS=$(N_SHELLS), color=$(if $(filter 0,$(ADD_COLOR)),no,yes))"
+	$(COMPOSE) run --rm $(SVC) \
+	  python scripts/preprocess_radiance_field.py \
+	    --data_root  $(GS_ROOT) \
+	    --cache_dir  $(_CACHE_MN10) \
+	    --categories $(CATEGORIES) \
+	    --n_shells   $(N_SHELLS) \
+	    $(_COLOR_FLAG)
+else
 	@if [ "$(DATASET)" = "mn10" ] || [ "$(DATASET)" = "all" ]; then \
-	  echo "Preprocessing ModelNet10 (8 shells, 512x256)..."; \
+	  echo "Preprocessing ModelNet10 (N_SHELLS=$(N_SHELLS), color=$(if $(filter 0,$(ADD_COLOR)),no,yes))..."; \
 	  $(COMPOSE) run --rm $(SVC) \
-	    python -m src.preprocessing.dataset \
+	    python scripts/preprocess_radiance_field.py \
 	      --data_root  $(GS_ROOT) \
-	      --cache_dir  data/processed/modelnet10/radiance_field \
+	      --cache_dir  $(_CACHE_MN10) \
 	      --dataset    modelnet10 \
-	      --n_shells   8 \
-	      --erp_height 256 \
-	      --erp_width  512; \
+	      --n_shells   $(N_SHELLS) \
+	      $(_COLOR_FLAG); \
 	fi
 	@if [ "$(DATASET)" = "mn40" ] || [ "$(DATASET)" = "all" ]; then \
-	  echo "Preprocessing ModelNet40 (8 shells, 512x256)..."; \
+	  echo "Preprocessing ModelNet40 (N_SHELLS=$(N_SHELLS), color=$(if $(filter 0,$(ADD_COLOR)),no,yes))..."; \
 	  $(COMPOSE) run --rm $(SVC) \
-	    python -m src.preprocessing.dataset \
+	    python scripts/preprocess_radiance_field.py \
 	      --data_root  $(GS_ROOT) \
-	      --cache_dir  data/processed/modelnet40/radiance_field \
+	      --cache_dir  $(_CACHE_MN40) \
 	      --dataset    modelnet40 \
-	      --n_shells   8 \
-	      --erp_height 256 \
-	      --erp_width  512; \
+	      --n_shells   $(N_SHELLS) \
+	      $(_COLOR_FLAG); \
 	fi
 	@if [ "$(DATASET)" != "mn10" ] && [ "$(DATASET)" != "mn40" ] && [ "$(DATASET)" != "all" ]; then \
-	  echo "Unknown DATASET=$(DATASET). Use mn10, mn40, or all (default: mn10)."; exit 1; \
+	  echo "Unknown DATASET=$(DATASET). Use mn10, mn40, or all."; exit 1; \
 	fi
+endif
 
 # =============================================================================
 # Training
