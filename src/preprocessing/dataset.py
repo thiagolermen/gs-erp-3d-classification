@@ -425,7 +425,7 @@ class GaussianERPDataset(Dataset):
             r_far_pct=self.r_far_pct,
             min_opacity=self.min_opacity,
             add_color=self.add_color_erp,
-            device=None,  # auto-detect: CUDA if available, else CPU
+            device="cpu",  # must be CPU: DataLoader workers are forked and cannot init CUDA
         )
 
         if cache_path is not None:
