@@ -74,14 +74,14 @@ def _cache_subdir_name(
     min_opacity: float,
     add_color: bool,
 ) -> str:
+    # Format must match GaussianERPDataset._cache_subdir() in dataset.py exactly
     name = (
         f"ns{n_shells}_{H}x{W}"
         f"_c{cutoff_sigma:.1f}"
         f"_p{r_near_pct:.1f}-{r_far_pct:.1f}"
         f"_op{min_opacity}"
+        f"{'_rgb' if add_color else ''}"
     )
-    if add_color:
-        name += "_rgb"
     return name
 
 

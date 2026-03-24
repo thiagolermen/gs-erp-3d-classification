@@ -597,7 +597,7 @@ def run_training(config_path: Path) -> dict[str, Any]:
     # 9. AMP
     # ------------------------------------------------------------------
     use_amp = bool(train_cfg.get("mixed_precision", True)) and device.type == "cuda"
-    scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler  = torch.amp.GradScaler("cuda", enabled=use_amp)
     logger.info("AMP       : %s", use_amp)
     logger.info("Max epochs: %d  |  early-stop patience: %d", max_epochs, early_stopping.patience)
 

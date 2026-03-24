@@ -360,9 +360,9 @@ class GaussianERPDataset(Dataset):
         # Encode all preprocessing parameters in the subdirectory name so that
         # changing any parameter does not silently reuse incompatible cached files.
         subdir_name = (
-            f"ns{self.n_shells}_H{self.H}_W{self.W}"
-            f"_c{self.cutoff_sigma}"
-            f"_p{self.r_near_pct}-{self.r_far_pct}"
+            f"ns{self.n_shells}_{self.H}x{self.W}"
+            f"_c{self.cutoff_sigma:.1f}"
+            f"_p{self.r_near_pct:.1f}-{self.r_far_pct:.1f}"
             f"_op{self.min_opacity}"
             f"{'_rgb' if self.add_color_erp else ''}"
         )
