@@ -191,7 +191,8 @@ resume:
 ifndef CONFIG
 	$(error CONFIG is required — usage: make resume CONFIG=configs/resnet34_hsdc_mn10.yaml [CHECKPOINT=experiments/<run>/last_checkpoint.pt])
 endif
-	$(eval _CKPT := $(if $(CHECKPOINT),$(CHECKPOINT),$(shell dirname $(CONFIG) | xargs -I{} echo experiments/$(shell python -c "import yaml; c=yaml.safe_load(open('$(CONFIG)')); print(c['run_name'])")/last_checkpoint.pt)))
+	$(eval _RUN  := $(shell grep -m1 '^run_name:' $(CONFIG) | sed 's/run_name:[[:space:]]*//'))
+	$(eval _CKPT := $(if $(CHECKPOINT),$(CHECKPOINT),experiments/$(_RUN)/last_checkpoint.pt))
 	@echo "Resuming: $(CONFIG)  checkpoint: $(_CKPT)"
 	$(COMPOSE) run --rm $(SVC) python -m src.training.train \
 		--config $(CONFIG) \
