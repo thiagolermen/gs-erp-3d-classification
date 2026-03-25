@@ -466,7 +466,7 @@ def _setup_logging(log_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def run_training(config_path: Path) -> dict[str, Any]:
+def run_training(config_path: Path, resume_checkpoint: Path | None = None) -> dict[str, Any]:
     """Run a complete training experiment from a YAML config file.
 
     Workflow:
@@ -479,12 +479,14 @@ def run_training(config_path: Path) -> dict[str, Any]:
     6. Instantiate the model (from scratch; no ImageNet pretraining).
     7. Wrap in ``DataParallel`` if multiple GPUs are available.
     8. Build optimizer, LR scheduler, and early-stopping tracker.
-    9. Epoch loop: train → validate → scheduler.step → LR clamp → log.
-    10. Save best and last checkpoints; write per-epoch CSV metrics.
-    11. Return a summary dict.
+    9. Optionally restore state from ``resume_checkpoint``.
+    10. Epoch loop: train → validate → scheduler.step → LR clamp → log.
+    11. Save best and last checkpoints; write per-epoch CSV metrics.
+    12. Return a summary dict.
 
     Args:
-        config_path: Path to the YAML experiment config file.
+        config_path:        Path to the YAML experiment config file.
+        resume_checkpoint:  Optional path to a ``.pt`` checkpoint to resume from.
 
     Returns:
         Summary dict with keys ``run_name``, ``best_val_acc``, ``best_epoch``,
@@ -602,27 +604,44 @@ def run_training(config_path: Path) -> dict[str, Any]:
     logger.info("Max epochs: %d  |  early-stop patience: %d", max_epochs, early_stopping.patience)
 
     # ------------------------------------------------------------------
-    # 10. CSV metrics file
+    # 10. Resume from checkpoint (optional)
     # ------------------------------------------------------------------
-    csv_path = exp_dir / "metrics.csv"
-    csv_fh   = open(csv_path, "w", newline="", encoding="utf-8")
-    writer   = csv.writer(csv_fh)
-    writer.writerow(["epoch", "train_loss", "val_loss", "train_acc", "val_acc", "lr"])
-
+    start_epoch    = 1
     best_val_acc   = -1.0
     best_epoch     = 0
     best_ckpt_path = exp_dir / "best_checkpoint.pt"
     last_ckpt_path = exp_dir / "last_checkpoint.pt"
 
+    if resume_checkpoint is not None:
+        logger.info("Resuming   : %s", resume_checkpoint)
+        ckpt = load_checkpoint(
+            resume_checkpoint, model, optimizer, scheduler, early_stopping, device
+        )
+        start_epoch  = int(ckpt.get("epoch", 0)) + 1
+        best_val_acc = float(ckpt.get("val_acc", -1.0))
+        best_epoch   = int(ckpt.get("epoch", 0))
+        logger.info("  → resuming from epoch %d  (best val_acc so far: %.2f%%)",
+                    start_epoch, best_val_acc)
+
+    # ------------------------------------------------------------------
+    # 11. CSV metrics file
+    # ------------------------------------------------------------------
+    csv_path   = exp_dir / "metrics.csv"
+    csv_mode   = "a" if resume_checkpoint is not None and csv_path.exists() else "w"
+    csv_fh     = open(csv_path, csv_mode, newline="", encoding="utf-8")
+    writer     = csv.writer(csv_fh)
+    if csv_mode == "w":
+        writer.writerow(["epoch", "train_loss", "val_loss", "train_acc", "val_acc", "lr"])
+
     t_start = time.time()
 
     # ------------------------------------------------------------------
-    # 11. Epoch loop
+    # 12. Epoch loop
     # ------------------------------------------------------------------
     logger.info("=" * 70)
-    final_epoch = 0
+    final_epoch = start_epoch - 1
 
-    for epoch in range(1, max_epochs + 1):
+    for epoch in range(start_epoch, max_epochs + 1):
         final_epoch = epoch
 
         # Train
@@ -727,8 +746,12 @@ def main() -> None:
         "--config", type=Path, required=True,
         help="Path to the YAML experiment config file.",
     )
+    parser.add_argument(
+        "--resume", type=Path, default=None,
+        help="Path to a checkpoint (.pt) to resume training from.",
+    )
     args = parser.parse_args()
-    run_training(args.config)
+    run_training(args.config, resume_checkpoint=args.resume)
 
 
 if __name__ == "__main__":

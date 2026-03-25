@@ -9,6 +9,8 @@
 #   make download TOKEN=<HF_TOKEN> [MN10_ONLY=1]     # download ModelSplat
 #   make preprocess [DATASET=mn10]                    # generate ERP cache
 #   make train CONFIG=configs/resnet34_hsdc_mn10.yaml # train one experiment
+#   make resume CONFIG=configs/resnet34_hsdc_mn10.yaml # resume from last_checkpoint.pt
+#   make resume CONFIG=<yaml> CHECKPOINT=<pt>          # resume from specific checkpoint
 #   make baselines-all                                # all 4 experiments
 #   make evaluate CONFIG=<yaml> CHECKPOINT=<pt>       # test-set evaluation
 #   make jupyter                                      # Jupyter on port 8888
@@ -61,6 +63,8 @@ help:
 	@echo ""
 	@printf "  \033[33m%-38s\033[0m %s\n" "[ Training ]" ""
 	@printf "  %-38s %s\n" "train CONFIG=<yaml>"    "Train a single experiment"
+	@printf "  %-38s %s\n" "resume CONFIG=<yaml>"   "Resume from last_checkpoint.pt"
+	@printf "  %-38s %s\n" "resume CONFIG=<yaml> CHECKPOINT=<pt>" "Resume from specific checkpoint"
 	@printf "  %-38s %s\n" "baselines-mn10"         "ResNet-34+HSDC and ResNet-50+SWHDC on MN10"
 	@printf "  %-38s %s\n" "baselines-mn40"         "Same on MN40"
 	@printf "  %-38s %s\n" "baselines-all"          "All 4 experiments (sequential)"
@@ -181,6 +185,17 @@ ifndef CONFIG
 endif
 	@echo "Training: $(CONFIG)"
 	$(COMPOSE) run --rm $(SVC) python -m src.training.train --config $(CONFIG)
+
+.PHONY: resume
+resume:
+ifndef CONFIG
+	$(error CONFIG is required — usage: make resume CONFIG=configs/resnet34_hsdc_mn10.yaml [CHECKPOINT=experiments/<run>/last_checkpoint.pt])
+endif
+	$(eval _CKPT := $(if $(CHECKPOINT),$(CHECKPOINT),$(shell dirname $(CONFIG) | xargs -I{} echo experiments/$(shell python -c "import yaml; c=yaml.safe_load(open('$(CONFIG)')); print(c['run_name'])")/last_checkpoint.pt)))
+	@echo "Resuming: $(CONFIG)  checkpoint: $(_CKPT)"
+	$(COMPOSE) run --rm $(SVC) python -m src.training.train \
+		--config $(CONFIG) \
+		--resume $(_CKPT)
 
 .PHONY: baselines-mn10
 baselines-mn10:
