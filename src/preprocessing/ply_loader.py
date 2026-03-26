@@ -20,8 +20,6 @@ References:
 
 from __future__ import annotations
 
-import re
-import struct
 from pathlib import Path
 
 import numpy as np

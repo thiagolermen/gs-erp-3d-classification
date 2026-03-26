@@ -27,7 +27,6 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
@@ -50,7 +49,7 @@ def evaluate_model(
     model: nn.Module,
     test_loader: DataLoader,
     device: torch.device,
-    class_names: Optional[list[str]] = None,
+    class_names: list[str] | None = None,
 ) -> dict:
     """Run *model* on *test_loader* and compute classification metrics.
 
@@ -130,7 +129,7 @@ def evaluate_model_tta(
     model: nn.Module,
     test_loader: DataLoader,
     device: torch.device,
-    class_names: Optional[list[str]] = None,
+    class_names: list[str] | None = None,
 ) -> dict:
     """Evaluate with Test-Time Augmentation (TTA).
 

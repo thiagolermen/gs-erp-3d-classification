@@ -17,6 +17,7 @@ data:
   r_near_pct: 5.0
   r_far_pct: 95.0
   add_color_erp: false
+  n_steps_per_shell: 4              # ray-march steps within each shell's radial extent
   cutoff_sigma: 3.0                  # spatial culling threshold (in sigmas)
   num_workers: 4
   batch_size: 32

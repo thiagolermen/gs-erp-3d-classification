@@ -271,18 +271,21 @@ make baselines-all
 
 ## Training Details
 
-| Parameter | HSDC paper | SWHDC paper |
-|-----------|------------|-------------|
+| Parameter | HSDC (ResNet-34) | SWHDC (ResNet-50) |
+|-----------|------------------|-------------------|
 | ERP resolution | 512 x 256 | 512 x 256 |
-| Input channels | 8 (N shells) | 8 (N shells) |
+| Input channels | 10 (8 shells + pseudo_depth + mip) | 10 |
 | Dilation rates N | 4 (rates 1-4) | 4 (rates 1-4) |
-| Optimizer | Adam | Adam |
+| Optimizer | AdamW (weight decay 5e-4) | AdamW (weight decay 5e-4) |
 | Initial LR | 1e-4 | 1e-4 |
-| LR decay | x0.9 every 25 epochs | x0.9 every 25 epochs |
-| Min LR | 1e-7 | 1e-7 |
-| Max epochs | 500 | 200 |
-| Early stopping patience | 25 | 25 |
-| Augmentation probability | 15% | 15% |
+| LR warmup | 10 epochs (linear) | 10 epochs (linear) |
+| LR schedule | Cosine annealing | Cosine annealing |
+| Min LR | 1e-6 | 1e-6 |
+| Max epochs | 500 | 400 |
+| Early stopping patience | 100 | 150 |
+| Label smoothing | 0.1 | 0.1 |
+| MixUp / CutMix | alpha 0.4 / alpha 0.4 (50-50) | alpha 0.4 / alpha 0.4 (50-50) |
+| Augmentation probability | 30% | 30% |
 | Train / val split | 80% / 20% | 80% / 20% |
 
 ---

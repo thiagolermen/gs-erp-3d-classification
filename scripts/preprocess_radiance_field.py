@@ -9,29 +9,24 @@ them up automatically without re-computing.
 
 Existing cache files are skipped — safe to resume after interruption.
 
-Usage (radiance field, new default params — n_shells=12, RGB color channels):
+Usage (default: n_shells=8, density only, no color):
 
-    python scripts/preprocess_radiance_field.py \\
-        --data_root gs_data/modelsplat/modelsplat_ply \\
-        --cache_dir data/processed/modelnet10/radiance_field_n12_rgb \\
-        --dataset   modelnet10 \\
-        --n_shells  12 \\
-        --add_color
-
-    # Old cache (n_shells=8, no color) — reproduce previous results:
     python scripts/preprocess_radiance_field.py \\
         --data_root gs_data/modelsplat/modelsplat_ply \\
         --cache_dir data/processed/modelnet10/radiance_field \\
-        --dataset   modelnet10 \\
-        --n_shells  8
+        --dataset   modelnet10
+
+    # ModelNet40:
+    python scripts/preprocess_radiance_field.py \\
+        --data_root gs_data/modelsplat/modelsplat_ply \\
+        --cache_dir data/processed/modelnet40/radiance_field \\
+        --dataset   modelnet40
 
     # Specific categories only (e.g. newly downloaded classes):
     python scripts/preprocess_radiance_field.py \\
         --data_root gs_data/modelsplat/modelsplat_ply \\
-        --cache_dir data/processed/modelnet10/radiance_field_n12_rgb \\
-        --categories car airplane flower_pot \\
-        --n_shells  12 \\
-        --add_color
+        --cache_dir data/processed/modelnet10/radiance_field \\
+        --categories car airplane flower_pot
 
 The cache subdirectory layout is identical to GaussianERPDataset._cache_subdir():
     <cache_dir> / ns{n}_{H}x{W}_c{cutoff}_p{near}-{far}_op{opacity}[_rgb] /
@@ -73,14 +68,15 @@ def _cache_subdir_name(
     r_far_pct: float,
     min_opacity: float,
     add_color: bool,
+    n_steps_per_shell: int = 1,
 ) -> str:
     # Format must match GaussianERPDataset._cache_subdir() in dataset.py exactly
     name = (
-        f"ns{n_shells}_{H}x{W}"
+        f"ns{n_shells}_H{H}_W{W}"
         f"_c{cutoff_sigma:.1f}"
         f"_p{r_near_pct:.1f}-{r_far_pct:.1f}"
-        f"_op{min_opacity}"
         f"{'_rgb' if add_color else ''}"
+        f"{'_st' + str(n_steps_per_shell) if n_steps_per_shell > 1 else ''}"
     )
     return name
 
@@ -103,21 +99,23 @@ def precompute(
     add_color: bool,
     batch_size: int,
     device: str | None,
+    n_steps_per_shell: int = 1,
 ) -> None:
     # Build the params subdirectory (matches dataset.py)
     subdir_name = _cache_subdir_name(
-        n_shells, H, W, cutoff_sigma, r_near_pct, r_far_pct, min_opacity, add_color
+        n_shells, H, W, cutoff_sigma, r_near_pct, r_far_pct, min_opacity, add_color,
+        n_steps_per_shell,
     )
     param_cache_dir = cache_dir / subdir_name
     param_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    logging.info("Cache dir     : %s", param_cache_dir)
-    logging.info("N shells      : %d", n_shells)
-    logging.info("ERP size      : %dx%d", H, W)
-    logging.info("r_near/far pct: %.1f / %.1f", r_near_pct, r_far_pct)
-    logging.info("Min opacity   : %.3f", min_opacity)
-    logging.info("Add color     : %s", add_color)
-    logging.info("Categories    : %s", categories)
+    logging.info("Cache dir       : %s", param_cache_dir)
+    logging.info("N shells        : %d", n_shells)
+    logging.info("ERP size        : %dx%d", H, W)
+    logging.info("r_near/far pct  : %.1f / %.1f", r_near_pct, r_far_pct)
+    logging.info("Steps per shell : %d", n_steps_per_shell)
+    logging.info("Add color       : %s", add_color)
+    logging.info("Categories      : %s", categories)
 
     # Collect all PLY paths for the target categories
     ply_paths: list[Path] = []
@@ -173,6 +171,7 @@ def precompute(
                 add_color=add_color,
                 batch_size=batch_size,
                 device=device,
+                n_steps_per_shell=n_steps_per_shell,
             )
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             np.save(str(cache_path), erp)
@@ -218,7 +217,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--cache_dir", type=Path,
-        default=Path("data/processed/modelnet10/radiance_field_n12_rgb"),
+        default=Path("data/processed/modelnet10/radiance_field"),
         help="Output cache directory (params subdirectory created automatically).",
     )
     parser.add_argument(
@@ -229,16 +228,20 @@ if __name__ == "__main__":
         "--categories", nargs="+", metavar="CAT", default=None,
         help="Specific categories to process (overrides --dataset).",
     )
-    parser.add_argument("--n_shells",    type=int,   default=12)
+    parser.add_argument("--n_shells",    type=int,   default=8)
     parser.add_argument("--height",      type=int,   default=256)
     parser.add_argument("--width",       type=int,   default=512)
     parser.add_argument("--cutoff_sigma", type=float, default=3.0)
-    parser.add_argument("--r_near_pct",  type=float, default=10.0)
-    parser.add_argument("--r_far_pct",   type=float, default=90.0)
-    parser.add_argument("--min_opacity", type=float, default=0.05,
-                        help="Remove Gaussians with opacity below this value (floater filter).")
-    parser.add_argument("--add_color",   action="store_true",
+    parser.add_argument("--r_near_pct",  type=float, default=5.0)
+    parser.add_argument("--r_far_pct",   type=float, default=95.0)
+    parser.add_argument("--min_opacity", type=float, default=0.0,
+                        help="Remove Gaussians with opacity below this value (0 = disabled).")
+    parser.add_argument("--add_color",          action="store_true",
                         help="Append 3 opacity-weighted RGB channels to the density shells.")
+    parser.add_argument("--n_steps_per_shell",  type=int, default=1,
+                        help="Ray-march steps within each shell's radial extent. "
+                             "1 = legacy point sample at shell centre (default). "
+                             "4-8 integrates density along the ray within the shell.")
     parser.add_argument("--batch_size",  type=int,   default=4096)
     parser.add_argument("--device",      type=str,   default=None,
                         help="Torch device string, e.g. 'cuda:0' or 'cpu'. Auto-detected if omitted.")
@@ -265,17 +268,18 @@ if __name__ == "__main__":
         cache_dir = project_root / cache_dir
 
     precompute(
-        data_root    = data_root,
-        cache_dir    = cache_dir,
-        categories   = cats,
-        n_shells     = args.n_shells,
-        H            = args.height,
-        W            = args.width,
-        cutoff_sigma = args.cutoff_sigma,
-        r_near_pct   = args.r_near_pct,
-        r_far_pct    = args.r_far_pct,
-        min_opacity  = args.min_opacity,
-        add_color    = args.add_color,
-        batch_size   = args.batch_size,
-        device       = args.device,
+        data_root         = data_root,
+        cache_dir         = cache_dir,
+        categories        = cats,
+        n_shells          = args.n_shells,
+        H                 = args.height,
+        W                 = args.width,
+        cutoff_sigma      = args.cutoff_sigma,
+        r_near_pct        = args.r_near_pct,
+        r_far_pct         = args.r_far_pct,
+        min_opacity       = args.min_opacity,
+        add_color         = args.add_color,
+        batch_size        = args.batch_size,
+        device            = args.device,
+        n_steps_per_shell = args.n_steps_per_shell,
     )

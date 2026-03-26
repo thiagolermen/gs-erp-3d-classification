@@ -30,8 +30,8 @@ TOKEN      ?=
 DATASET    ?= mn10
 MN10_ONLY  ?=
 CATEGORIES ?=
-N_SHELLS   ?= 12
-ADD_COLOR  ?= 1
+N_SHELLS   ?= 8
+ADD_COLOR  ?= 0
 
 GS_ROOT    := gs_data/modelsplat/modelsplat_ply
 
@@ -55,11 +55,11 @@ help:
 	@printf "  %-38s %s\n" "download-extra TOKEN=<token>" "Download car, airplane, flower_pot"
 	@echo ""
 	@printf "  \033[33m%-38s\033[0m %s\n" "[ Preprocessing ]" ""
-	@printf "  %-38s %s\n" "preprocess"             "New cache: mn10+mn40, 12 shells, RGB color"
+	@printf "  %-38s %s\n" "preprocess"             "mn10+mn40, 8 shells, density only"
 	@printf "  %-38s %s\n" "preprocess DATASET=mn10" "ModelNet10 only"
 	@printf "  %-38s %s\n" "preprocess DATASET=mn40" "ModelNet40 only"
 	@printf "  %-38s %s\n" "preprocess CATEGORIES='car airplane'" "Specific categories only"
-	@printf "  %-38s %s\n" "preprocess N_SHELLS=8 ADD_COLOR=0" "Legacy 8-shell no-color cache"
+	@printf "  %-38s %s\n" "preprocess N_SHELLS=16" "16-shell ablation cache"
 	@echo ""
 	@printf "  \033[33m%-38s\033[0m %s\n" "[ Training ]" ""
 	@printf "  %-38s %s\n" "train CONFIG=<yaml>"    "Train a single experiment"

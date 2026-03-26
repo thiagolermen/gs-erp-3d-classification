@@ -22,10 +22,11 @@ shells to produce an N-channel ERP tensor, replacing the original 12-channel or
 
 | Model | Input | MN10 (RF-ERP) | MN40 (RF-ERP) | MN10 geometric* | MN40 geometric* | Params |
 |---|---|---|---|---|---|---|
-| ResNet-34 + HSDC | 8-shell RF-ERP | **91.96%** | **87.72%** | 97.1% | 93.9% | 5.5M |
-| ResNet-50 + SWHDC | 8-shell RF-ERP | **90.75%** | **87.19%** | 94.1% | 91.9% | 23.6M |
+| ResNet-34 + HSDC | 10-ch density ERP | pending | pending | 97.1% | 93.9% | 5.5M |
+| ResNet-50 + SWHDC | 10-ch density ERP | pending | pending | 94.1% | 91.9% | 23.6M |
 
 *Reported in original papers for geometric ray-cast ERP on raw meshes. RF-ERP results are the TCC contribution.
+Input: 8 density shells + pseudo_depth + mip (geometry-only, no colour).
 
 ---
 
@@ -62,7 +63,7 @@ The 80/20 split uses a fixed `seed=42` numpy RNG (SWHDC paper §IV-A).
 Each 3DGS PLY contains Gaussian primitives: position `xyz`, logit-opacity, log-scale,
 quaternion rotation, and SH DC color coefficients. The preprocessing:
 
-1. **Decode** — `opacity = sigmoid(raw)`, `scale = exp(raw)`, `rgb = clip(0.5 + 0.28209 * f_dc, 0, 1)`
+1. **Decode** — `opacity = sigmoid(raw)`, `scale = exp(raw)` (SH colour coefficients are decoded by the loader but not used in the ERP)
 2. **Centroid** — opacity-weighted mean of Gaussian positions
 3. **Shell radii** — EgoNeRF exponential spacing (5th/95th percentile of distances):
    ```
@@ -75,7 +76,8 @@ quaternion rotation, and SH DC color coefficients. The preprocessing:
    ```
    Spatial culling keeps only Gaussians where `|r_dist - r_s| < 3σ × max_scale`.
 
-**Output:** `(N_shells, H, W)` float32 ERP tensor. Default: N=8, H=256, W=512.
+**Output:** `(N_shells, H, W)` float32 density ERP tensor. Default: N=8, H=256, W=512.
+After derived channels (pseudo_depth + mip) the model input is **(10, H, W)**.
 
 **Caching:** Computed ERPs are saved as `.npy` files in `data/processed/`. The cache
 subdirectory name encodes all preprocessing parameters; changing any parameter
@@ -146,12 +148,14 @@ See `docs/architecture.md` for diagrams and equations.
 | Optimizer | AdamW (β₁=0.9, β₂=0.999) | decoupled weight decay 5e-4 |
 | Initial LR | 1e-4 | with 10-epoch linear warmup |
 | LR schedule | Cosine annealing | floor at 1e-6 |
-| Max epochs | 500 (HSDC) / 200 (SWHDC) | |
-| Early stopping | patience = 100 epochs | gives cosine schedule room |
+| Max epochs | 500 (HSDC) / 400 (SWHDC) | |
+| Early stopping | patience = 100 (HSDC) / 150 (SWHDC) | gives cosine schedule room |
 | Gradient clipping | max_norm = 1.0 | |
 | Batch size | 32 | |
 | Mixed precision | AMP (CUDA only) | |
 | MixUp | α = 0.4 (Zhang et al., 2018) | blends sample pairs to reduce overfitting |
+| CutMix | α = 0.4, 50/50 with MixUp | rectangular region swap between samples |
+| Augmentation prob | 30% per transform | flip, rotation, blur, noise, random erasing |
 | Pretraining | None — trained from scratch | |
 
 **Outputs** per run (`experiments/<run_name>/`):

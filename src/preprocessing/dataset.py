@@ -160,10 +160,11 @@ class GaussianERPDataset(Dataset):
         W: int = 512,
         cutoff_sigma: float = 3.0,
         batch_size_rf: int = 128,
-        r_near_pct: float = 10.0,
-        r_far_pct: float = 90.0,
-        min_opacity: float = 0.05,
+        r_near_pct: float = 5.0,
+        r_far_pct: float = 95.0,
+        min_opacity: float = 0.0,
         add_color_erp: bool = False,
+        n_steps_per_shell: int = 1,
         cache_dir: Path | None = None,
         augment_train: bool = True,
         augment_prob: float = 0.3,
@@ -189,6 +190,7 @@ class GaussianERPDataset(Dataset):
         self.r_far_pct    = r_far_pct
         self.min_opacity  = min_opacity
         self.add_color_erp = add_color_erp
+        self.n_steps_per_shell = n_steps_per_shell
         self.cache_dir    = Path(cache_dir) if cache_dir is not None else None
         self._do_augment  = augment_train and (split == "train")
         self._augment_prob = augment_prob
@@ -360,11 +362,11 @@ class GaussianERPDataset(Dataset):
         # Encode all preprocessing parameters in the subdirectory name so that
         # changing any parameter does not silently reuse incompatible cached files.
         subdir_name = (
-            f"ns{self.n_shells}_{self.H}x{self.W}"
+            f"ns{self.n_shells}_H{self.H}_W{self.W}"
             f"_c{self.cutoff_sigma:.1f}"
             f"_p{self.r_near_pct:.1f}-{self.r_far_pct:.1f}"
-            f"_op{self.min_opacity}"
             f"{'_rgb' if self.add_color_erp else ''}"
+            f"{'_st' + str(self.n_steps_per_shell) if self.n_steps_per_shell > 1 else ''}"
         )
         return self.cache_dir / subdir_name
 
@@ -426,6 +428,7 @@ class GaussianERPDataset(Dataset):
             min_opacity=self.min_opacity,
             add_color=self.add_color_erp,
             device="cpu",  # must be CPU: DataLoader workers are forked and cannot init CUDA
+            n_steps_per_shell=self.n_steps_per_shell,
         )
 
         if cache_path is not None:
@@ -493,11 +496,12 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
     H            = int(data_cfg.get("erp_height", 256))
     W            = int(data_cfg.get("erp_width",  512))
     cutoff_sigma = float(data_cfg.get("cutoff_sigma", 3.0))
-    r_near_pct    = float(data_cfg.get("r_near_pct",  10.0))
-    r_far_pct     = float(data_cfg.get("r_far_pct",   90.0))
-    min_opacity   = float(data_cfg.get("min_opacity",  0.05))
-    add_color_erp = bool(data_cfg.get("add_color_erp", False))
-    batch_size_rf = int(data_cfg.get("batch_size_rf", 4096))
+    r_near_pct    = float(data_cfg.get("r_near_pct",  5.0))
+    r_far_pct     = float(data_cfg.get("r_far_pct",   95.0))
+    min_opacity   = float(data_cfg.get("min_opacity",  0.0))
+    add_color_erp      = bool(data_cfg.get("add_color_erp", False))
+    n_steps_per_shell  = int(data_cfg.get("n_steps_per_shell", 1))
+    batch_size_rf      = int(data_cfg.get("batch_size_rf", 4096))
 
     cache_dir_raw = data_cfg.get("cache_dir", None)
     cache_dir = Path(cache_dir_raw) if cache_dir_raw is not None else None
@@ -542,6 +546,7 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
             r_far_pct=r_far_pct,
             min_opacity=min_opacity,
             add_color_erp=add_color_erp,
+            n_steps_per_shell=n_steps_per_shell,
             cache_dir=cache_dir,
             augment_train=True,
             augment_prob=augment_prob,
