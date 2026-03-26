@@ -31,6 +31,7 @@ DATASET    ?= mn10
 MN10_ONLY  ?=
 CATEGORIES ?=
 N_SHELLS   ?= 8
+N_STEPS    ?= 4
 ADD_COLOR  ?= 0
 OVERWRITE  ?= 0
 
@@ -61,6 +62,7 @@ help:
 	@printf "  %-38s %s\n" "preprocess DATASET=mn40" "ModelNet40 only"
 	@printf "  %-38s %s\n" "preprocess CATEGORIES='car airplane'" "Specific categories only"
 	@printf "  %-38s %s\n" "preprocess N_SHELLS=16" "16-shell ablation cache"
+	@printf "  %-38s %s\n" "preprocess N_STEPS=8"  "8-step ray-march integral (default: 4)"
 	@printf "  %-38s %s\n" "preprocess OVERWRITE=1" "Re-compute and overwrite existing cache"
 	@echo ""
 	@printf "  \033[33m%-38s\033[0m %s\n" "[ Training ]" ""
@@ -151,8 +153,9 @@ ifdef CATEGORIES
 	  python scripts/preprocess_radiance_field.py \
 	    --data_root  $(GS_ROOT) \
 	    --cache_dir  $(_CACHE_MN10) \
-	    --categories $(CATEGORIES) \
-	    --n_shells   $(N_SHELLS) \
+	    --categories        $(CATEGORIES) \
+	    --n_shells          $(N_SHELLS) \
+	    --n_steps_per_shell $(N_STEPS) \
 	    $(_COLOR_FLAG) $(_OVERWRITE_FLAG)
 else
 	@if [ "$(DATASET)" = "mn10" ] || [ "$(DATASET)" = "all" ]; then \
@@ -161,8 +164,9 @@ else
 	    python scripts/preprocess_radiance_field.py \
 	      --data_root  $(GS_ROOT) \
 	      --cache_dir  $(_CACHE_MN10) \
-	      --dataset    modelnet10 \
-	      --n_shells   $(N_SHELLS) \
+	      --dataset          modelnet10 \
+	      --n_shells          $(N_SHELLS) \
+	      --n_steps_per_shell $(N_STEPS) \
 	      $(_COLOR_FLAG) $(_OVERWRITE_FLAG); \
 	fi
 	@if [ "$(DATASET)" = "mn40" ] || [ "$(DATASET)" = "all" ]; then \
@@ -171,8 +175,9 @@ else
 	    python scripts/preprocess_radiance_field.py \
 	      --data_root  $(GS_ROOT) \
 	      --cache_dir  $(_CACHE_MN40) \
-	      --dataset    modelnet40 \
-	      --n_shells   $(N_SHELLS) \
+	      --dataset          modelnet40 \
+	      --n_shells          $(N_SHELLS) \
+	      --n_steps_per_shell $(N_STEPS) \
 	      $(_COLOR_FLAG) $(_OVERWRITE_FLAG); \
 	fi
 	@if [ "$(DATASET)" != "mn10" ] && [ "$(DATASET)" != "mn40" ] && [ "$(DATASET)" != "all" ]; then \
