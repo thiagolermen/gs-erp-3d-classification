@@ -32,6 +32,7 @@ MN10_ONLY  ?=
 CATEGORIES ?=
 N_SHELLS   ?= 8
 ADD_COLOR  ?= 0
+OVERWRITE  ?= 0
 
 GS_ROOT    := gs_data/modelsplat/modelsplat_ply
 
@@ -60,6 +61,7 @@ help:
 	@printf "  %-38s %s\n" "preprocess DATASET=mn40" "ModelNet40 only"
 	@printf "  %-38s %s\n" "preprocess CATEGORIES='car airplane'" "Specific categories only"
 	@printf "  %-38s %s\n" "preprocess N_SHELLS=16" "16-shell ablation cache"
+	@printf "  %-38s %s\n" "preprocess OVERWRITE=1" "Re-compute and overwrite existing cache"
 	@echo ""
 	@printf "  \033[33m%-38s\033[0m %s\n" "[ Training ]" ""
 	@printf "  %-38s %s\n" "train CONFIG=<yaml>"    "Train a single experiment"
@@ -136,6 +138,7 @@ endif
 # Internal helper: resolve cache dir name from N_SHELLS and ADD_COLOR
 _CACHE_SUFFIX  = $(if $(filter 0,$(ADD_COLOR)),radiance_field,radiance_field_n$(N_SHELLS)_rgb)
 _COLOR_FLAG    = $(if $(filter 0,$(ADD_COLOR)),,--add_color)
+_OVERWRITE_FLAG = $(if $(filter 0,$(OVERWRITE)),,--overwrite)
 _CATS_FLAG     = $(if $(CATEGORIES),--categories $(CATEGORIES),--dataset $(DATASET))
 _CACHE_MN10    = data/processed/modelnet10/$(_CACHE_SUFFIX)
 _CACHE_MN40    = data/processed/modelnet40/$(_CACHE_SUFFIX)
@@ -143,34 +146,34 @@ _CACHE_MN40    = data/processed/modelnet40/$(_CACHE_SUFFIX)
 .PHONY: preprocess
 preprocess:
 ifdef CATEGORIES
-	@echo "Preprocessing categories: $(CATEGORIES)  (N_SHELLS=$(N_SHELLS), color=$(if $(filter 0,$(ADD_COLOR)),no,yes))"
+	@echo "Preprocessing categories: $(CATEGORIES)  (N_SHELLS=$(N_SHELLS), color=$(if $(filter 0,$(ADD_COLOR)),no,yes), overwrite=$(if $(filter 0,$(OVERWRITE)),no,yes))"
 	$(COMPOSE) run --rm $(SVC) \
 	  python scripts/preprocess_radiance_field.py \
 	    --data_root  $(GS_ROOT) \
 	    --cache_dir  $(_CACHE_MN10) \
 	    --categories $(CATEGORIES) \
 	    --n_shells   $(N_SHELLS) \
-	    $(_COLOR_FLAG)
+	    $(_COLOR_FLAG) $(_OVERWRITE_FLAG)
 else
 	@if [ "$(DATASET)" = "mn10" ] || [ "$(DATASET)" = "all" ]; then \
-	  echo "Preprocessing ModelNet10 (N_SHELLS=$(N_SHELLS), color=$(if $(filter 0,$(ADD_COLOR)),no,yes))..."; \
+	  echo "Preprocessing ModelNet10 (N_SHELLS=$(N_SHELLS), color=$(if $(filter 0,$(ADD_COLOR)),no,yes), overwrite=$(if $(filter 0,$(OVERWRITE)),no,yes))..."; \
 	  $(COMPOSE) run --rm $(SVC) \
 	    python scripts/preprocess_radiance_field.py \
 	      --data_root  $(GS_ROOT) \
 	      --cache_dir  $(_CACHE_MN10) \
 	      --dataset    modelnet10 \
 	      --n_shells   $(N_SHELLS) \
-	      $(_COLOR_FLAG); \
+	      $(_COLOR_FLAG) $(_OVERWRITE_FLAG); \
 	fi
 	@if [ "$(DATASET)" = "mn40" ] || [ "$(DATASET)" = "all" ]; then \
-	  echo "Preprocessing ModelNet40 (N_SHELLS=$(N_SHELLS), color=$(if $(filter 0,$(ADD_COLOR)),no,yes))..."; \
+	  echo "Preprocessing ModelNet40 (N_SHELLS=$(N_SHELLS), color=$(if $(filter 0,$(ADD_COLOR)),no,yes), overwrite=$(if $(filter 0,$(OVERWRITE)),no,yes))..."; \
 	  $(COMPOSE) run --rm $(SVC) \
 	    python scripts/preprocess_radiance_field.py \
 	      --data_root  $(GS_ROOT) \
 	      --cache_dir  $(_CACHE_MN40) \
 	      --dataset    modelnet40 \
 	      --n_shells   $(N_SHELLS) \
-	      $(_COLOR_FLAG); \
+	      $(_COLOR_FLAG) $(_OVERWRITE_FLAG); \
 	fi
 	@if [ "$(DATASET)" != "mn10" ] && [ "$(DATASET)" != "mn40" ] && [ "$(DATASET)" != "all" ]; then \
 	  echo "Unknown DATASET=$(DATASET). Use mn10, mn40, or all."; exit 1; \

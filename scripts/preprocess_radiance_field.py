@@ -100,6 +100,7 @@ def precompute(
     batch_size: int,
     device: str | None,
     n_steps_per_shell: int = 1,
+    overwrite: bool = False,
 ) -> None:
     # Build the params subdirectory (matches dataset.py)
     subdir_name = _cache_subdir_name(
@@ -153,7 +154,7 @@ def precompute(
 
         cache_path = param_cache_dir / rel.with_suffix(".npy")
 
-        if cache_path.exists():
+        if cache_path.exists() and not overwrite:
             skipped += 1
             pbar.set_postfix(done=processed, skip=skipped, fail=failed)
             continue
@@ -242,6 +243,8 @@ if __name__ == "__main__":
                         help="Ray-march steps within each shell's radial extent. "
                              "1 = legacy point sample at shell centre (default). "
                              "4-8 integrates density along the ray within the shell.")
+    parser.add_argument("--overwrite",   action="store_true",
+                        help="Re-compute and overwrite existing cache files.")
     parser.add_argument("--batch_size",  type=int,   default=4096)
     parser.add_argument("--device",      type=str,   default=None,
                         help="Torch device string, e.g. 'cuda:0' or 'cpu'. Auto-detected if omitted.")
@@ -282,4 +285,5 @@ if __name__ == "__main__":
         batch_size        = args.batch_size,
         device            = args.device,
         n_steps_per_shell = args.n_steps_per_shell,
+        overwrite         = args.overwrite,
     )
