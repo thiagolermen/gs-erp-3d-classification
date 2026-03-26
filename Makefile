@@ -71,6 +71,8 @@ help:
 	@echo ""
 	@printf "  \033[33m%-38s\033[0m %s\n" "[ Evaluation & Analysis ]" ""
 	@printf "  %-38s %s\n" "evaluate CONFIG=<yaml> CHECKPOINT=<pt>" "Test-set evaluation"
+	@printf "  %-38s %s\n" "evaluate-all"           "Evaluate all 4 experiments (best_model.pt)"
+	@printf "  %-38s %s\n" "evaluate-all-tta"       "Same with test-time augmentation (5 views)"
 	@printf "  %-38s %s\n" "jupyter"                "Jupyter on port 8888 (SSH-tunnel ready)"
 	@printf "  %-38s %s\n" "logs RUN_NAME=<name>"   "tail -f the run's train.log"
 	@echo ""
@@ -227,6 +229,20 @@ endif
 	$(COMPOSE) run --rm $(SVC) python -m src.training.evaluate \
 		--config     $(CONFIG) \
 		--checkpoint $(CHECKPOINT)
+
+.PHONY: evaluate-all
+evaluate-all:
+	$(MAKE) evaluate CONFIG=configs/resnet34_hsdc_mn10.yaml CHECKPOINT=experiments/resnet34_hsdc_mn10_seed42/best_model.pt
+	$(MAKE) evaluate CONFIG=configs/resnet34_hsdc_mn40.yaml CHECKPOINT=experiments/resnet34_hsdc_mn40_seed42/best_model.pt
+	$(MAKE) evaluate CONFIG=configs/resnet50_swhdc_mn10.yaml CHECKPOINT=experiments/resnet50_swhdc_mn10_seed42/best_model.pt
+	$(MAKE) evaluate CONFIG=configs/resnet50_swhdc_mn40.yaml CHECKPOINT=experiments/resnet50_swhdc_mn40_seed42/best_model.pt
+
+.PHONY: evaluate-all-tta
+evaluate-all-tta:
+	$(COMPOSE) run --rm $(SVC) python -m src.training.evaluate --config configs/resnet34_hsdc_mn10.yaml  --checkpoint experiments/resnet34_hsdc_mn10_seed42/best_model.pt  --tta
+	$(COMPOSE) run --rm $(SVC) python -m src.training.evaluate --config configs/resnet34_hsdc_mn40.yaml  --checkpoint experiments/resnet34_hsdc_mn40_seed42/best_model.pt  --tta
+	$(COMPOSE) run --rm $(SVC) python -m src.training.evaluate --config configs/resnet50_swhdc_mn10.yaml --checkpoint experiments/resnet50_swhdc_mn10_seed42/best_model.pt --tta
+	$(COMPOSE) run --rm $(SVC) python -m src.training.evaluate --config configs/resnet50_swhdc_mn40.yaml --checkpoint experiments/resnet50_swhdc_mn40_seed42/best_model.pt --tta
 
 # =============================================================================
 # Jupyter

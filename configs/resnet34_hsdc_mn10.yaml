@@ -9,15 +9,14 @@ seed: 42
 data:
   dataset: modelnet10
   data_root: gs_data/modelsplat/modelsplat_ply
-  cache_dir: data/processed/modelnet10/radiance_field_n12_rgb
+  cache_dir: data/processed/modelnet10/radiance_field
   pipeline: radiance_field          # EgoNeRF exponential shell ERP from 3DGS
-  n_shells: 12                       # was 8; finer shell grid for thin-walled objects
+  n_shells: 8
   erp_width: 512
   erp_height: 256
-  r_near_pct: 10.0                   # tighter: 10th percentile (was 5th)
-  r_far_pct: 90.0                    # tighter: 90th percentile (was 95th)
-  min_opacity: 0.05                  # filter floater Gaussians below this opacity
-  add_color_erp: true                # add 3 opacity-weighted RGB channels (total 12+3=15 density+color)
+  r_near_pct: 5.0
+  r_far_pct: 95.0
+  add_color_erp: false
   cutoff_sigma: 3.0                  # spatial culling threshold (in sigmas)
   num_workers: 4
   batch_size: 32
@@ -32,7 +31,7 @@ model:
   backbone: resnet34
   block: hsdc
   num_classes: 10
-  in_channels: 17                    # 12 density + 3 RGB color + pseudo_depth + mip
+  in_channels: 10                    # 8 density shells + pseudo_depth + mip
   erp_width: 512
   erp_height: 256
   dropout: 0.3                       # dropout before final FC
