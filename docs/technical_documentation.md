@@ -20,12 +20,12 @@ shells to produce an N-channel ERP tensor, replacing the original 12-channel or
 
 **Configurations evaluated:**
 
-| Model | Input | MN10 target | Params |
-|---|---|---|---|
-| ResNet-34 + HSDC | 8-shell RF-ERP | 97.1%* | 5.3M |
-| ResNet-50 + SWHDC | 8-shell RF-ERP | 94.1%* | 25.5M |
+| Model | Input | MN10 (RF-ERP) | MN40 (RF-ERP) | MN10 geometric* | MN40 geometric* | Params |
+|---|---|---|---|---|---|---|
+| ResNet-34 + HSDC | 8-shell RF-ERP | **91.96%** | **87.72%** | 97.1% | 93.9% | 5.5M |
+| ResNet-50 + SWHDC | 8-shell RF-ERP | **90.75%** | **87.19%** | 94.1% | 91.9% | 23.6M |
 
-*Reported in original papers for geometric ERP. Results with RF-ERP are the TCC contribution.
+*Reported in original papers for geometric ray-cast ERP on raw meshes. RF-ERP results are the TCC contribution.
 
 ---
 
@@ -460,28 +460,32 @@ original paper's (5.3M) is due to the different number of input channels
 
 #### 9.8.2 Training Infrastructure and Time
 
-| Method | GPU | Pretrain Time | Finetune Time | Total Epochs | Notes |
-|---|---|---|---|---|---|
-| Gaussian-MAE | 1× A6000 (pretrain) / 1× H100 (finetune) | 300 epochs on 52K ShapeNet | 300 epochs on MN10/MN40 | 600 total | Pretrain batch=128; finetune batch=224 |
-| GS-PT | 2× A100 (pretrain) / 1× A100 (finetune) | 20 epochs on ShapeNet | 300 epochs on MN40 | 320 total | Finetune batch=32, AdamW lr=5e-2 |
-| Point-MAE | 1× GPU (unspecified) | 300 epochs on ShapeNet-55 | 300 epochs on MN40 | 600 total | Standard Transformer training |
-| PointMLP | 1× GPU | — | ~300 epochs on MN40 | 300 | Reported ~11 hours on ModelNet40 |
-| **GS-ERP: ResNet-34+HSDC** | **1× RTX 3090 Ti** | **—** | **131.6 min (261 ep, early stop)** | **261** | **Best val at epoch 161** |
-| **GS-ERP: ResNet-50+SWHDC** | **1× RTX 3090 Ti** | **—** | **100.7 min (200 ep, full)** | **200** | **Best val at epoch 121** |
+| Method | Dataset | GPU | Pretrain Time | Finetune Time | Total Epochs | Notes |
+|---|---|---|---|---|---|---|
+| Gaussian-MAE | MN10/MN40 | 1× A6000 (pretrain) / 1× H100 (finetune) | 300 epochs on 52K ShapeNet | 300 epochs | 600 total | Pretrain batch=128; finetune batch=224 |
+| GS-PT | MN40 | 2× A100 (pretrain) / 1× A100 (finetune) | 20 epochs on ShapeNet | 300 epochs | 320 total | Finetune batch=32, AdamW lr=5e-2 |
+| Point-MAE | MN40 | 1× GPU (unspecified) | 300 epochs on ShapeNet-55 | 300 epochs | 600 total | Standard Transformer training |
+| PointMLP | MN40 | 1× GPU | — | ~300 epochs | 300 | Reported ~11 hours on ModelNet40 |
+| **GS-ERP: ResNet-34+HSDC** | **MN10** | **1× RTX 3090 Ti** | **—** | **131.6 min (261 ep, early stop)** | **261** | **Best val at epoch 161** |
+| **GS-ERP: ResNet-50+SWHDC** | **MN10** | **1× RTX 3090 Ti** | **—** | **100.7 min (200 ep, full)** | **200** | **Best val at epoch 121** |
+| **GS-ERP: ResNet-34+HSDC** | **MN40** | **1× RTX 3090 Ti** | **—** | **491.5 min (403 ep, early stop)** | **403** | **Best val at epoch 303** |
+| **GS-ERP: ResNet-50+SWHDC** | **MN40** | **1× RTX 3090 Ti** | **—** | **240.2 min (200 ep, full)** | **200** | **Best val at epoch 101** |
 
 #### 9.8.3 Training Cost Analysis
 
 A fair comparison must account for the **total** compute cost, not just
 the fine-tuning phase:
 
-| Method | Pretrain Cost | Finetune Cost | Total Cost | MN10 OA |
-|---|---|---|---|---|
-| Gaussian-MAE E(All) | 300 ep × 52K objects (A6000) | 300 ep × 3.9K objects (H100) | High | 95.37% |
-| GS-PT | 20 ep × ShapeNet (2× A100) | 300 ep × MN40 (1× A100) | High | N/A† |
-| Point-MAE | 300 ep × ShapeNet-55 | 300 ep × MN10 | Medium | 94.93% |
-| Point-BERT | BERT-style on ShapeNet | 300 ep × MN10 | Medium | 94.82% |
-| **GS-ERP: ResNet-34+HSDC** | **None** | **261 ep × 3.2K (RTX 3090 Ti)** | **Low (2.2 h)** | **91.96%** |
-| **GS-ERP: ResNet-50+SWHDC** | **None** | **200 ep × 3.2K (RTX 3090 Ti)** | **Low (1.7 h)** | **90.75%** |
+| Method | Pretrain Cost | Finetune Cost | Total Cost | MN10 OA | MN40 OA |
+|---|---|---|---|---|---|
+| Gaussian-MAE E(All) | 300 ep × 52K objects (A6000) | 300 ep × 3.9K objects (H100) | High | 95.37% | 93.35% |
+| GS-PT | 20 ep × ShapeNet (2× A100) | 300 ep × MN40 (1× A100) | High | N/A† | — |
+| Point-MAE | 300 ep × ShapeNet-55 | 300 ep × MN10/MN40 | Medium | 94.93% | 93.20% |
+| Point-BERT | BERT-style on ShapeNet | 300 ep × MN10/MN40 | Medium | 94.82% | 93.20% |
+| **GS-ERP: ResNet-34+HSDC** | **None** | **261 ep × 3.2K (RTX 3090 Ti)** | **Low (2.2 h)** | **91.96%** | — |
+| **GS-ERP: ResNet-50+SWHDC** | **None** | **200 ep × 3.2K (RTX 3090 Ti)** | **Low (1.7 h)** | **90.75%** | — |
+| **GS-ERP: ResNet-34+HSDC** | **None** | **403 ep × 9.8K (RTX 3090 Ti)** | **Low (8.2 h)** | — | **87.72%** |
+| **GS-ERP: ResNet-50+SWHDC** | **None** | **200 ep × 9.8K (RTX 3090 Ti)** | **Low (4.0 h)** | — | **87.19%** |
 
 †GS-PT does not report MN10 results; MN40 figures are in the ICASSP proceedings.
 
@@ -492,6 +496,8 @@ training time above.
 
 #### 9.8.4 Parameter Efficiency (OA per Million Parameters)
 
+**ModelNet10:**
+
 | Method | Params (M) | MN10 OA (%) | OA/M ratio |
 |---|---|---|---|
 | **GS-ERP: ResNet-34+HSDC** | **5.5** | **91.96** | **16.8** |
@@ -500,17 +506,29 @@ training time above.
 | Point-BERT | ~22 | 94.82 | 4.3 |
 | **GS-ERP: ResNet-50+SWHDC** | **23.6** | **90.75** | **3.8** |
 
+**ModelNet40:**
+
+| Method | Params (M) | MN40 OA (%) | OA/M ratio |
+|---|---|---|---|
+| **GS-ERP: ResNet-34+HSDC** | **5.5** | **87.72** | **15.9** |
+| Gaussian-MAE E(All) | ~22 | 93.35 | 4.2 |
+| Point-MAE | 22.1 | 93.20 | 4.2 |
+| Point-BERT | ~22 | 93.20 | 4.2 |
+| **GS-ERP: ResNet-50+SWHDC** | **23.6** | **87.19** | **3.7** |
+
 The HSDC variant achieves the highest parameter efficiency among all
-methods (16.8% OA per million parameters), despite a lower absolute
-accuracy. This makes it an attractive option for deployment scenarios
-where model size is constrained.
+methods on both datasets (~16× better OA/M than Transformer methods),
+despite a lower absolute accuracy. This makes it an attractive option
+for deployment scenarios where model size is constrained.
 
 ---
 
 ### 9.9 Summary: Positioning This Work
 
-The table below positions our GS-ERP approach among all 3DGS-based
-classification methods on ModelNet10:
+The tables below position our GS-ERP approach among all 3DGS-based
+classification methods on ModelNet10 and ModelNet40.
+
+**ModelNet10:**
 
 | Method | Venue | Input | Architecture | Pretrain | Params (M) | MN10 OA (%) |
 |---|---|---|---|---|---|---|
@@ -522,39 +540,55 @@ classification methods on ModelNet10:
 | **GS-ERP: ResNet-34+HSDC** | **This work** | **8-shell RF-ERP** | **CNN (ResNet-34)** | **None** | **5.5** | **91.96** |
 | **GS-ERP: ResNet-50+SWHDC** | **This work** | **8-shell RF-ERP** | **CNN (ResNet-50)** | **None** | **23.6** | **90.75** |
 
+**ModelNet40:**
+
+| Method | Venue | Input | Architecture | Pretrain | Params (M) | MN40 OA (%) | MN40 mAcc (%) |
+|---|---|---|---|---|---|---|---|
+| Gaussian-MAE E(All) | 3DV 2025 | Raw Gaussian params | Transformer | Self-sup MAE | ~22 | **93.35** | — |
+| Gaussian-MAE E(C,S,R) | 3DV 2025 | Gaussian C+S+R | Transformer | Self-sup MAE | ~22 | 93.19 | — |
+| Point-MAE | ECCV 2022 | Point cloud (1024) | Transformer | Self-sup MAE | 22.1 | 93.20 | — |
+| Point-BERT | CVPR 2022 | Point cloud (1024) | Transformer | Self-sup BERT | ~22 | 93.20 | — |
+| Gaussian-MAE E(C) | 3DV 2025 | Gaussian centroids | Transformer | Self-sup MAE | ~22 | 91.77 | — |
+| PointNet++ | NeurIPS 2017 | Point cloud (1024) | Hierarchical MLP | None | 1.7 | 91.9 | — |
+| **GS-ERP: ResNet-34+HSDC** | **This work** | **8-shell RF-ERP** | **CNN (ResNet-34)** | **None** | **5.5** | **87.72** | **83.99** |
+| **GS-ERP: ResNet-50+SWHDC** | **This work** | **8-shell RF-ERP** | **CNN (ResNet-50)** | **None** | **23.6** | **87.19** | **83.04** |
+
 **Key observations:**
 
 1. **Different paradigm.** Our approach is the only one to convert 3DGS into
    a 2D image representation (ERP) and apply CNN-based processing. All other
    methods process Gaussian primitives as unordered sets (point-like modality).
 
-2. **No pretraining, dramatically lower compute.** Our models train from
-   scratch in ~2 hours on a single consumer GPU (RTX 3090 Ti). Gaussian-MAE
-   requires 600 total epochs across pretraining (A6000/H100) and fine-tuning,
-   plus the 52K-object ShapeNet pretraining corpus. Our total compute cost
-   is roughly two orders of magnitude lower.
+2. **No pretraining, dramatically lower compute.** Our MN10 models train from
+   scratch in ~2 hours; MN40 in 4–8 hours — all on a single consumer GPU
+   (RTX 3090 Ti). Gaussian-MAE requires 600 total epochs across pretraining
+   (A6000/H100) plus the 52K-object ShapeNet pretraining corpus. Our total
+   compute cost is roughly two orders of magnitude lower.
 
 3. **4× fewer parameters with HSDC.** ResNet-34+HSDC (5.5M params) achieves
-   91.96% while being 4× smaller than any Transformer-based method (~22M).
-   The HSDC block adds negligible parameters while providing ERP-specific
-   distortion correction.
+   91.96% on MN10 and 87.72% on MN40 while being 4× smaller than any
+   Transformer-based method (~22M). The HSDC block adds negligible parameters
+   while providing ERP-specific distortion correction.
 
 4. **Distortion correction transfers to radiance fields.** The HSDC and SWHDC
    blocks were designed for geometric ray-cast ERP. On 3DGS-derived ERP, they
-   still achieve meaningful classification (91.96%), demonstrating that the
-   distortion-correction principle generalises to the radiance field domain.
+   still achieve meaningful classification on both benchmarks, demonstrating
+   that the distortion-correction principle generalises to the radiance field
+   domain.
 
-5. **Representation gap.** The 5.1 pp gap between our best (91.96%) and the
-   geometric ERP baseline (97.1%) quantifies the information cost of
-   replacing mesh ray-casting with 3DGS radiance field sampling. The 3.4 pp
-   gap from Gaussian-MAE (95.37%) reflects both the representation difference
-   (ERP image vs raw Gaussian params) and the architectural difference
-   (CNN from scratch vs pretrained Transformer).
+5. **Representation gap.** On MN10, the 5.1 pp gap between our best (91.96%)
+   and the geometric ERP baseline (97.1%) quantifies the information cost of
+   replacing mesh ray-casting with 3DGS radiance field sampling. On MN40,
+   the gap to the geometric baseline (93.9%) is 6.2 pp (HSDC) and 6.7 pp
+   (SWHDC). The gaps to Gaussian-MAE (93.35%) on MN40 are 5.6 pp and 6.2 pp,
+   reflecting both the representation difference (ERP image vs raw Gaussian
+   params) and the architectural difference (CNN from scratch vs pretrained
+   Transformer).
 
-6. **Parameter efficiency.** At 16.8% OA per million parameters, the HSDC
-   variant is the most parameter-efficient method in this comparison — nearly
-   4× better than any Transformer-based approach (4.3% OA/M). This suggests
-   that ERP-based representations, when combined with appropriate distortion
+6. **Parameter efficiency.** On MN10, the HSDC variant achieves 16.8 OA/M vs
+   4.3 OA/M for Transformer methods. On MN40, HSDC achieves 15.9 OA/M vs
+   4.2 OA/M — consistently ~4× more parameter-efficient. This suggests that
+   ERP-based representations, when combined with appropriate distortion
    correction, offer a highly efficient pathway for 3DGS classification.
 
 ---
