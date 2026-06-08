@@ -50,6 +50,7 @@ training:
   mixed_precision: true
   label_smoothing: 0.1               # reduces overconfidence on ambiguous classes
   class_weighted_loss: true          # up-weight minority classes (bathtub 50 vs chair 100 samples)
+  use_mix_augmentation: false         # master switch — set to false to disable both MixUp and CutMix (ablation)
   mixup_alpha: 0.4                   # MixUp blending — directly attacks generalization gap
   cutmix_alpha: 0.4                  # CutMix — alternates 50/50 with MixUp per batch
 

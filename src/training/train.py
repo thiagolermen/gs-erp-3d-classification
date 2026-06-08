@@ -594,6 +594,14 @@ def run_training(config_path: Path, resume_checkpoint: Path | None = None) -> di
     save_every  = int(cfg.get("output", {}).get("save_every_n_epochs", 0))
     mixup_alpha  = float(train_cfg.get("mixup_alpha", 0.0))
     cutmix_alpha = float(train_cfg.get("cutmix_alpha", 0.0))
+    use_mix_aug  = bool(train_cfg.get("use_mix_augmentation", True))
+    if not use_mix_aug:
+        mixup_alpha  = 0.0
+        cutmix_alpha = 0.0
+    logger.info(
+        "Mix aug   : %s  (mixup_alpha=%.2f, cutmix_alpha=%.2f)",
+        "enabled" if use_mix_aug else "disabled", mixup_alpha, cutmix_alpha,
+    )
 
     # ------------------------------------------------------------------
     # 9. AMP

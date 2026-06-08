@@ -30,101 +30,434 @@ Input: 8 density shells + pseudo_depth + mip (geometry-only, no colour).
 
 ---
 
-## 2. Dataset
+## 2. Dataset: ModelSplat
 
-**ModelSplat** (`ShapeSplats/ModelNet_Splats` on HuggingFace):
-- 12,309 ModelNet objects as pre-trained 3DGS `.ply` files
-- 40 categories (superset of ModelNet10)
+> **Source code:** `src/preprocessing/ply_loader.py`
+> **References:** Ma et al. [9]; Wu et al. [5]; Kerbl et al. [16]
 
-**Directory structure:**
+### 2.1 Origin and Scope
+
+The **ModelSplat** dataset (`ShapeSplats/ModelNet_Splats` on HuggingFace,
+released alongside Ma et al. [9]) provides a 3D Gaussian Splat representation
+of every CAD model from the original ModelNet40 benchmark of Wu et al. [5].
+Each mesh was converted into a 3DGS reconstruction by training a standard
+3DGS optimiser [16] from a set of multi-view renders of the mesh until the
+synthesised views match the renders. The resulting Gaussian cloud occupies
+roughly the same spatial region as the original mesh, and approximates the
+mesh's surface up to the densification budget used during training.
+
+**Headline statistics:**
+
+| Item | Value |
+|---|---|
+| Total objects | 12,309 |
+| Categories | 40 (ModelNet40 superset of ModelNet10) |
+| Format | Binary little-endian PLY (`point_cloud.ply`) |
+| Average Gaussians per object | $N_i \approx 10^4$–$10^5$ (variable per object) |
+| Source mesh dataset | ModelNet [5] |
+| Training pipeline | Vanilla 3DGS [16] |
+
+### 2.2 Directory Layout
+
 ```
 gs_data/modelsplat/modelsplat_ply/
-└── <category>/
-    ├── train/<id>/point_cloud.ply
-    └── test/<id>/point_cloud.ply
+└── <category>/                          (e.g. bathtub, chair, …)
+    ├── train/<object_id>/point_cloud.ply
+    └── test/<object_id>/point_cloud.ply
 ```
 
-**Splits:**
+The `train` and `test` sub-directories preserve the official ModelNet split
+of Wu et al. [5]. The total number of objects per split is reported in
+Table 1 of [9].
+
+### 2.3 PLY File Contents
+
+A 3DGS PLY file stores a single `vertex` element of $N_i$ primitives. Each
+primitive carries the raw parameters of one 3D Gaussian in the form they
+were optimised by the 3DGS pipeline of Kerbl et al. [16, eq. 2-4]. These
+raw values use unbounded internal parameterisations (log-space for scale,
+logit-space for opacity) to ensure unconstrained gradient updates during
+training; they must be decoded back into their geometric meaning before any
+downstream computation.
+
+**Property layout (in storage order, all `float32`):**
+
+```
+x, y, z,                  # Gaussian centre position
+nx, ny, nz,               # (unused — left over from PLY format)
+f_dc_0, f_dc_1, f_dc_2,   # SH degree-0 (DC) colour coefficients
+f_rest_*,                 # SH degree-1..3 coefficients (variable count)
+opacity,                  # logit-space opacity (raw)
+scale_0, scale_1, scale_2,# log-space scale per local axis (raw)
+rot_0, rot_1, rot_2, rot_3 # quaternion (w, x, y, z), unnormalised
+```
+
+The number of `f_rest_*` properties depends on the spherical-harmonic degree
+$\ell$ used during 3DGS training; the parser detects this automatically.
+
+### 2.4 Decoding Raw Parameters
+
+For every Gaussian $i \in \{1, \ldots, N\}$ the loader produces the
+following physically meaningful quantities (matching Kerbl et al. [16] and
+the 3DGS reference implementation):
+
+| Quantity | Symbol | Formula | Domain |
+|---|---|---|---|
+| Centre | $\boldsymbol{\mu}_i$ | $(x_i, y_i, z_i)$ | $\mathbb{R}^3$ |
+| Opacity | $\alpha_i$ | $\sigma(\text{opacity}_i) = \dfrac{1}{1 + e^{-\text{opacity}_i}}$ | $[0, 1]$ |
+| Scale (per axis) | $\mathbf{s}_i$ | $\exp(\text{scale}_i)$ | $\mathbb{R}_{>0}^3$ |
+| Rotation | $\mathbf{q}_i$ | $(w, x, y, z)_i / \|(w, x, y, z)_i\|$ | unit quaternion |
+| Albedo | $\mathbf{c}_i$ | $\mathrm{clip}\!\left(0.5 + Y_0^0 \cdot \mathbf{f}^{dc}_i,\ 0,\ 1\right)$ | $[0, 1]^3$ |
+
+where $Y_0^0 = \frac{1}{2\sqrt{\pi}} \approx 0.28209479$ is the zeroth-order
+spherical-harmonic basis function, so that the DC SH coefficient maps to a
+view-independent RGB albedo. Higher-order SH coefficients
+(`f_rest_*`) are not used by the ERP pipeline; we only ever need the
+geometric extent of each Gaussian for density evaluation, not its
+view-dependent colour.
+
+Each Gaussian therefore defines a 3D anisotropic kernel with covariance
+
+$$\boldsymbol{\Sigma}_i = \mathbf{R}_i\,\mathrm{diag}(\mathbf{s}_i)^2\,\mathbf{R}_i^{\top},$$
+
+where $\mathbf{R}_i$ is the rotation matrix induced by the quaternion
+$\mathbf{q}_i$. This anisotropic covariance is what makes 3DGS a more
+expressive representation than an isotropic point cloud, and our preprocessing
+fully accounts for it (Section 3.5).
+
+### 2.5 Splits
 
 | Split | Source | Usage |
 |---|---|---|
-| train | 80% of `<category>/train/` | Gradient updates + augmentation |
-| val | 20% of `<category>/train/` | Early stopping |
-| test | `<category>/test/` | Final evaluation only |
+| `train` | 80 % of `<category>/train/` | Gradient updates + augmentation |
+| `val`   | 20 % of `<category>/train/` | Early stopping, no augmentation |
+| `test`  | `<category>/test/`          | Final evaluation only |
 
-The 80/20 split uses a fixed `seed=42` numpy RNG (SWHDC paper §IV-A).
+The 80/20 train/val split is drawn once by a fixed-seed `numpy.random.default_rng(seed=42)`
+permutation of the preset training pool, matching the protocol of Stringhini
+et al. [2, §IV-A]. The official ModelNet `test` directory is held out and
+touched only for the final-epoch evaluation reported in Section 7.
 
 ---
 
 ## 3. Radiance Field ERP Generation
 
-> `src/preprocessing/radiance_field.py` — EgoNeRF (CVPR 2023)
+> **Source code:** `src/preprocessing/radiance_field.py`
+> **Pipeline overview:** PLY $\rightarrow$ centroid $\rightarrow$ shell radii
+> $\rightarrow$ per-pixel ray directions $\rightarrow$ per-shell radial integral
+> of the 3DGS density field $\rightarrow$ $(N_{\text{shells}}, H, W)$ tensor.
+> **References:** Kerbl et al. [16]; Choi et al. [3]; Stringhini et al. [1, 2].
 
-Each 3DGS PLY contains Gaussian primitives: position `xyz`, logit-opacity, log-scale,
-quaternion rotation, and SH DC color coefficients. The preprocessing:
+Whereas the original HSDC/SWHDC pipelines [1, 2] obtained the ERP by
+ray-casting a triangle mesh, our pipeline samples a continuous radiance
+field over a family of concentric spheres centred on the object. This
+section formalises every step.
 
-1. **Decode** — `opacity = sigmoid(raw)`, `scale = exp(raw)` (SH colour coefficients are decoded by the loader but not used in the ERP)
-2. **Centroid** — opacity-weighted mean of Gaussian positions
-3. **Shell radii** — EgoNeRF exponential spacing (5th/95th percentile of distances):
-   ```
-   r_s = r_near × (r_far / r_near)^(s / (N-1)),   s = 0 … N-1
-   ```
-4. **Ray directions** — unit vectors from ERP pixel (u, v) via spherical coordinates
-5. **Density at each shell** — for each shell s and ERP pixel, sample point `p = centroid + r_s × d(u,v)`:
-   ```
-   ρ(p) = Σ_i opacity_i × exp(-0.5 × ||R_iᵀ (p - μ_i) / σ_i||²)
-   ```
-   Spatial culling keeps only Gaussians where `|r_dist - r_s| < 3σ × max_scale`.
+### 3.1 Spherical View Centre — Opacity-Weighted Centroid
 
-**Output:** `(N_shells, H, W)` float32 density ERP tensor. Default: N=8, H=256, W=512.
-After derived channels (pseudo_depth + mip) the model input is **(10, H, W)**.
+The single free parameter common to every ERP camera model is the location
+of its optical centre. We choose the **opacity-weighted centroid** of the
+Gaussian cloud:
 
-**Caching:** Computed ERPs are saved as `.npy` files in `data/processed/`. The cache
-subdirectory name encodes all preprocessing parameters; changing any parameter
-automatically invalidates the cache.
+$$\mathbf{C} \;=\; \frac{\displaystyle\sum_{i=1}^{N} \alpha_i \, \boldsymbol{\mu}_i}{\displaystyle\sum_{i=1}^{N} \alpha_i}.$$
+
+This is the natural analogue of the area-weighted mesh centroid used by
+Stringhini et al. [1, §II-A]: $\alpha_i$ acts as the perceptual "mass" of a
+Gaussian, since low-opacity primitives contribute proportionally less to
+the rendered radiance field. If $\sum_i \alpha_i$ is numerically zero the
+implementation falls back to the unweighted mean to avoid a degenerate
+camera (`compute_centroid`, `radiance_field.py:62`). For a typical
+ModelSplat object, $\mathbf{C}$ lies inside the convex hull of the surface
+Gaussians, which is the geometric prerequisite for the spherical
+panorama to capture the full object surface.
+
+### 3.2 ERP Camera Model — Per-Pixel Ray Directions
+
+The output ERP has resolution $H \times W$ (default $256 \times 512$). For
+each pixel $(u, v)$ with $u \in \{0, \ldots, W-1\}$, $v \in \{0, \ldots, H-1\}$,
+the ERP camera model defines spherical coordinates
+
+$$\theta(u) \;=\; \frac{u}{W}\cdot 2\pi - \pi
+\quad\in\quad [-\pi, \pi),$$
+
+$$\varphi(v) \;=\; \frac{\pi}{2} - \frac{v}{H}\cdot\pi
+\quad\in\quad \left[-\tfrac{\pi}{2}, \tfrac{\pi}{2}\right],$$
+
+and a unit ray direction
+
+$$\mathbf{d}(u, v) \;=\; \bigl(\cos\varphi\cos\theta,\; \cos\varphi\sin\theta,\; \sin\varphi\bigr)^{\top}.$$
+
+This matches the ERP convention used in the HSDC paper [1, eq. 1-2]: row 0
+of the image is the north pole ($\varphi = +\pi/2$); the bottom row is the
+south pole; the centre column corresponds to azimuth $\theta = 0$. The set
+$\{\mathbf{d}(u, v)\}$ is precomputed once per output resolution
+(`build_ray_directions`, `radiance_field.py:90`).
+
+### 3.3 Concentric Shell Radii — EgoNeRF Spacing
+
+Inspired by Choi et al. [3, §3.2], we sample the density field at $N$
+concentric spheres of radii
+
+$$r_s \;=\; r_{\text{near}} \cdot \left(\frac{r_{\text{far}}}{r_{\text{near}}}\right)^{\frac{s}{N-1}},
+\qquad s = 0, 1, \ldots, N-1.$$
+
+The exponential spacing places more shells near the surface (which usually
+lies close to $r_{\text{near}}$) and fewer in the empty exterior, mirroring
+the radiance-field intuition that the most informative signal is
+concentrated near the object boundary.
+
+**Dynamic radius selection.** The two free parameters $r_{\text{near}}$ and
+$r_{\text{far}}$ are derived from the distribution of Gaussian centre
+distances
+
+$$d_i \;=\; \|\boldsymbol{\mu}_i - \mathbf{C}\|_2.$$
+
+Specifically, $r_{\text{near}}$ and $r_{\text{far}}$ are the
+$p_{\text{near}}$-th and $p_{\text{far}}$-th percentiles of $\{d_i\}_{i=1}^N$,
+with defaults $p_{\text{near}} = 5$, $p_{\text{far}} = 95$
+(`compute_shell_radii`, `radiance_field.py:138`). The percentiles are
+preferred over $\min_i d_i$ and $\max_i d_i$ because they reject **floater
+Gaussians**: low-opacity primitives that 3DGS optimisation occasionally
+parks far away from the object surface. Floaters would otherwise inflate
+$r_{\text{far}}$ and waste outer shells on empty space. A degenerate case
+($r_{\text{near}} = r_{\text{far}}$, e.g. a planar object) falls back to a
+linspace around $r_{\text{near}}$.
+
+### 3.4 Per-Shell Radial Integration
+
+A pure point sample at $r_s$ would miss density that lives between adjacent
+shells. We therefore associate each shell $s$ with a radial interval
+$[r_s^{-}, r_s^{+}]$ defined by midpoints between consecutive shell centres
+(`compute_shell_bounds`, `radiance_field.py:189`):
+
+$$r_s^{\pm} \;=\; \frac{r_s + r_{s\pm 1}}{2}.$$
+
+The endpoints $r_0^{-}$ and $r_{N-1}^{+}$ extend symmetrically by half the
+adjacent inter-shell gap so that the shells cover the full radial range.
+
+Within $[r_s^{-}, r_s^{+}]$ we ray-march at $K$ uniformly spaced sample
+radii
+
+$$t_k \;=\; r_s^{-} + \left(k + \tfrac{1}{2}\right)\frac{r_s^{+} - r_s^{-}}{K},
+\qquad k = 0, 1, \ldots, K-1,$$
+
+and accumulate the **arithmetic mean** of the densities at the samples
+into channel $s$ of the ERP. With $K = 1$ this reduces to a point sample
+at the shell centre; with $K \geq 4$ (configuration default) it
+approximates a Riemann sum over the radial extent of the shell,
+representing each shell by a representative density integral rather than a
+slice. The value $K$ is exposed as `n_steps_per_shell` in the YAML
+configs.
+
+### 3.5 3DGS Density Evaluation
+
+At every sample point $\mathbf{p} = \mathbf{C} + t_k\,\mathbf{d}(u, v)$ the
+volumetric density of the radiance field is the standard
+3DGS expression of Kerbl et al. [16, eq. 3] summed over all primitives:
+
+$$\rho(\mathbf{p}) \;=\; \sum_{i=1}^{N} \alpha_i \, \exp\!\left(-\tfrac{1}{2}\, D_i^2(\mathbf{p})\right),$$
+
+where $D_i^2$ is the squared Mahalanobis distance from $\mathbf{p}$ to
+Gaussian $i$:
+
+$$D_i^2(\mathbf{p}) \;=\; (\mathbf{p} - \boldsymbol{\mu}_i)^{\top}\,\boldsymbol{\Sigma}_i^{-1}\,(\mathbf{p} - \boldsymbol{\mu}_i).$$
+
+Substituting $\boldsymbol{\Sigma}_i = \mathbf{R}_i\,\mathrm{diag}(\mathbf{s}_i)^2\,\mathbf{R}_i^{\top}$ gives the
+factorised form
+
+$$D_i^2(\mathbf{p}) \;=\; \left\|\,\mathrm{diag}(\mathbf{s}_i)^{-1}\,\mathbf{R}_i^{\top}\,(\mathbf{p} - \boldsymbol{\mu}_i)\,\right\|_2^{2}.$$
+
+The implementation precomputes the **pre-scaled inverse rotation**
+$\widetilde{\mathbf{R}}_i \in \mathbb{R}^{3\times 3}$ defined by
+$\widetilde{\mathbf{R}}_i[k, :] = \mathbf{R}_i^{\top}[k, :] / s_{i,k}$
+(`precompute_gaussian_params`, `radiance_field.py:257`), so that
+
+$$D_i^2(\mathbf{p}) \;=\; \|\widetilde{\mathbf{R}}_i\,(\mathbf{p} - \boldsymbol{\mu}_i)\|_2^{2}.$$
+
+This formulation allows the per-shell computation to be expressed as a
+single batched `einsum` over (Gaussians $\times$ pixels), which is the
+bottleneck of the pipeline (lines 479-525 in numpy; 581-627 in torch).
+The quaternion-to-rotation conversion uses the standard formula
+(`quaternions_to_rotation_matrices`, `radiance_field.py:214`):
+
+$$\mathbf{R}(\mathbf{q}) \;=\; \begin{pmatrix} 1 - 2(y^2 + z^2) & 2(xy - wz) & 2(xz + wy) \\ 2(xy + wz) & 1 - 2(x^2 + z^2) & 2(yz - wx) \\ 2(xz - wy) & 2(yz + wx) & 1 - 2(x^2 + y^2) \end{pmatrix},$$
+
+with the quaternion normalised to unit length first.
+
+### 3.6 Spatial Culling
+
+A naive evaluation of $\rho$ at every $(s, u, v, k)$ would touch every one
+of the $N \sim 10^5$ Gaussians for every one of the $K \cdot N_{\text{shells}} \cdot H \cdot W \sim 10^7$
+sample points. We exploit two facts to cull most contributions:
+
+1. The kernel $\exp(-\tfrac{1}{2} D_i^2)$ falls below numerical precision
+   for $D_i > 3$ ("3σ cutoff"), as the contribution drops by
+   $e^{-4.5} \approx 0.011$ at $D = 3$ and faster thereafter.
+2. The Mahalanobis distance from any point on the sphere of radius $r$ to
+   Gaussian $i$ is bounded below by
+   $\bigl(|d_i - r| - 3\,\max_k s_{i,k}\bigr) / \max_k s_{i,k}$.
+
+Therefore, for each shell $s$ with radial extent $[r_s^{-}, r_s^{+}]$ we
+keep only the Gaussians whose centre-to-centroid distance lies inside
+$[r_s^{-} - 3\,s_{\max,i},\ r_s^{+} + 3\,s_{\max,i}]$, where
+$s_{\max,i} = \max_k s_{i,k}$ (`radiance_field.py:491-494`). Inside the
+inner loop a second `where(D^2 < (3\sigma)^2, ..., 0)` mask drops any pixel
+whose Mahalanobis distance still exceeds the threshold. In practice
+fewer than 5 % of Gaussians survive culling per shell, giving the pipeline
+a roughly $20\times$ speedup over the unculled evaluation.
+
+### 3.7 Output Tensor
+
+After all shells have been integrated the pipeline returns a contiguous
+`float32` tensor of shape
+
+$$\mathrm{ERP} \in \mathbb{R}_{\geq 0}^{N_{\text{shells}} \times H \times W}, \qquad N_{\text{shells}} = 8,\ H = 256,\ W = 512$$
+
+whose entry at $(s, v, u)$ is the mean density inside shell $s$ along the
+ray $\mathbf{d}(u, v)$. Density values are unbounded above (typical max
+$\approx 14$ on ModelSplat) and the distribution is heavily right-skewed
+because most pixels look into empty regions of the radiance field. This
+skew motivates the log-compression transform of Section 4.1.
+
+### 3.8 Caching
+
+The radiance-field evaluation is the most expensive step in the pipeline
+(roughly 1-2 s per object on CPU, ms-scale on GPU). To amortise this cost
+across training epochs and across experiments, every computed ERP is
+serialised to `data/processed/<dataset>/radiance_field/<param_hash>/<category>/<split>/<id>.npy`,
+where `<param_hash>` encodes every preprocessing hyperparameter
+($N_{\text{shells}}$, $H$, $W$, cutoff $\sigma$, percentile bounds, ray-march
+steps, colour flag). Changing any preprocessing parameter automatically
+invalidates the cache, eliminating a class of silent reproducibility bugs
+(`_cache_subdir`, `dataset.py:358`).
 
 ---
 
-## 4. Input Transforms and Data Augmentation
+## 4. Classifier Input — Transforms and Augmentation
 
-### 4.1 Log1p Transform
+> **Source code:** `src/preprocessing/dataset.py`, `src/preprocessing/augmentation.py`
+> **References:** Stringhini et al. [1, 2]; Zhang et al. [6]; Zhong et al. [7]; Yun et al. [17].
 
-> `src/preprocessing/dataset.py` — config key `data.log1p_transform`
+The cached ERP from Section 3 is not fed directly to the network. Inside
+`GaussianERPDataset.__getitem__` (`dataset.py:223`) four transforms run in
+order: log-compression, derived-channel augmentation of the channel
+dimension, single-sample geometric/photometric augmentation, and finally
+tensor conversion. A separate batch-level transform (MixUp/CutMix) is
+performed in the training loop.
 
-Raw density ERP is sparse (mean≈0.057, 94% pixels below mean) and unbounded [0, ~14].
-When enabled, `erp = log1p(erp)` is applied before augmentation. This compresses the
-range to [0, ~2.7] and amplifies low-density boundary regions where discriminative
-surface information resides.
+### 4.1 Log-Compression
+
+The raw shell density $\rho \in [0, \rho_{\max}]$ is heavy-tailed (the
+99 th percentile is roughly an order of magnitude smaller than the
+maximum). To stabilise downstream optimisation and to amplify
+low-density boundary signal where the discriminative content of an
+object lives, we apply the elementwise
+
+$$\tilde{\rho} \;=\; \log\!\bigl(1 + \rho\bigr),$$
+
+i.e. `numpy.log1p`, before any further processing
+(`dataset.py:236`; activated by `data.log1p_transform: true` in the YAML).
+This bounded-derivative function compresses $\rho \in [0, 14]$ to
+$\tilde\rho \in [0, 2.71]$ while preserving the partial ordering of
+densities.
 
 ### 4.2 Derived Feature Channels
 
-> `src/preprocessing/dataset.py` — config key `data.derived_channels`
+After log1p, two derived scalar fields are concatenated as additional
+channels (`_compute_derived_channels`, `dataset.py:257`).
 
-After the optional log1p, additional channels may be appended:
+**Pseudo-depth** is the density-weighted average shell index, normalised
+to $[0, 1]$:
 
-| Channel | Formula | Shape | Purpose |
+$$\mathrm{depth}(u, v) \;=\; \frac{1}{N_{\text{shells}} - 1} \cdot \frac{\sum_{s=0}^{N_{\text{shells}}-1} s\,\tilde\rho_s(u, v)}{\sum_{s=0}^{N_{\text{shells}}-1} \tilde\rho_s(u, v) + \epsilon}.$$
+
+It encodes which shell along the ray contains the dominant surface, i.e.
+a coarse depth-from-camera map equivalent to the geometric depth channel
+of HSDC [1] but computed from the radiance field.
+
+**Maximum intensity projection (MIP)** records the strongest density
+along the ray:
+
+$$\mathrm{mip}(u, v) \;=\; \max_{s=0, \ldots, N_{\text{shells}}-1} \tilde\rho_s(u, v).$$
+
+It behaves as a silhouette mask: pixels for which every shell is empty
+become zero, while pixels that intersect any part of the object are
+positive.
+
+Together these channels embed two scalar summaries of the radial axis
+into the spatial-channel encoding, providing the convolutional backbone
+with explicit depth and silhouette cues that would otherwise have to be
+learned from the 8 raw shells. With 8 density shells + pseudo-depth +
+MIP, the final classifier input is
+
+$$\mathrm{ERP}^{\,\text{clf}} \in \mathbb{R}_{\geq 0}^{10 \times 256 \times 512}.$$
+
+### 4.3 Single-Sample Augmentation
+
+> `src/preprocessing/augmentation.py`
+
+All augmentations operate on `(C, H, W)` float32 arrays and are agnostic
+to the channel count $C$. Augmentation is only applied to the training
+split.
+
+| Primitive | Probability | Parameters | Notes |
 |---|---|---|---|
-| `pseudo_depth` | density-weighted avg shell index per pixel, normalised to [0,1] | (1, H, W) | Approximate surface distance along each ray |
-| `mip` | max density across shells per pixel | (1, H, W) | Silhouette-like channel highlighting where density exists |
+| Horizontal flip | 0.5 | — | Exact azimuthal $180^{\circ}$ rotation (ERP is $2\pi$-periodic along $u$) |
+| 3-D rotation | 0.3 | $\theta_x, \theta_y \sim \mathcal{U}[0^{\circ}, 15^{\circ}]$, $\theta_z \sim \mathcal{U}[0^{\circ}, 45^{\circ}]$ | Spherical remapping with bilinear sampling, circular along $u$ |
+| Gaussian blur | 0.3 | $\sigma \sim \mathcal{U}[0.1, 2.0]$ | Applied channel-wise |
+| Gaussian noise | 0.3 | $\mu \sim \mathcal{U}[0, 10^{-3}]$, $\sigma \sim \mathcal{U}[0, 0.03]$ | Independent per channel |
+| Random erasing [7] | 0.3 | area $\sim \mathcal{U}[2\%, 33\%]$, aspect $\sim \log\mathcal{U}[0.3, 3.3]$ | Sets a rectangular patch to zero |
 
-With 8 density shells + pseudo_depth + mip, the model input becomes **(10, H, W)**.
+The 3-D rotation deserves special mention because it is non-trivial to
+implement correctly on an ERP. For every output pixel $(u, v)$ we
+compute its output direction $\mathbf{d}_{\text{out}}$ as in Section 3.2,
+apply the **inverse** rotation $\mathbf{d}_{\text{src}} = \mathbf{R}^{-1}\,\mathbf{d}_{\text{out}}$,
+convert back to ERP coordinates, and bilinearly sample the input ERP at
+$(u_{\text{src}}, v_{\text{src}})$ with circular wrap on $u$
+(`rotate_erp_3d`, `augmentation.py:45`). This procedure is rigid on the
+sphere and therefore preserves the geometric correctness of the ERP
+camera model, in contrast to a naive 2-D image rotation which would
+distort the spherical geometry.
 
-### 4.3 Augmentation
+The angle ranges and probabilities match the original HSDC and SWHDC
+augmentation recipes of Stringhini et al. [1, §III-A; 2, §IV-A], except
+that we use probability 0.3 instead of the paper's 0.15 to compensate for
+the smaller effective dataset size when training from scratch on
+ModelSplat. Random erasing [7] is not in the original recipe and is
+added because the radiance-field ERP tends to contain large
+low-information regions that the network can otherwise memorise.
 
-> `src/preprocessing/augmentation.py` — HSDC §III-A / SWHDC §IV-A
+### 4.4 Sample-Pair Augmentation (MixUp and CutMix)
 
-Applied to training samples only (after log1p + derived channels). Each primitive
-fires independently at probability P (default 0.3):
+In the training loop (`src/training/train.py`) we further combine pairs
+of samples using **MixUp** [6] with $\alpha = 0.4$ and **CutMix** [17]
+adapted for ERPs.
 
-| Primitive | Parameters |
-|---|---|
-| Horizontal flip | P=0.5; equivalent to 180° azimuthal rotation |
-| 3D rotation | Rx, Ry ~ U[0°, 15°]; Rz ~ U[0°, 45°]; bilinear spherical remapping |
-| Gaussian blur | σ ~ U[0.1, 2.0]; applied channel-wise |
-| Gaussian noise | mean ~ U[0, 0.001]; std ~ U[0, 0.03]; additive |
-| Random erasing | Area ~ U[2%, 33%]; aspect ~ logU[0.3, 3.3]; patch zeroed (Zhong et al., 2020) |
+**MixUp** linearly blends two samples and their one-hot labels:
 
-Augmentation is channel-agnostic — works for any number of ERP channels.
+$$\tilde{\mathbf{x}} = \lambda\,\mathbf{x}_a + (1 - \lambda)\,\mathbf{x}_b,
+\qquad \tilde{\mathbf{y}} = \lambda\,\mathbf{y}_a + (1 - \lambda)\,\mathbf{y}_b,
+\qquad \lambda \sim \mathrm{Beta}(0.4, 0.4).$$
+
+**CutMix** replaces a rectangular crop of $\mathbf{x}_a$ with the
+corresponding crop from $\mathbf{x}_b$ and adjusts the label by the
+fraction of pixels retained. Our implementation
+(`cutmix_erp`, `augmentation.py:272`) wraps the crop horizontally so
+that ERP periodicity is preserved (`cx` is sampled in $[0, W)$ and the
+patch wraps across the seam if necessary). The two primitives alternate
+50/50 per batch.
+
+### 4.5 Final Tensor Hand-Off
+
+After all transforms the per-sample tensor delivered to the training loop
+is
+
+$$\mathbf{x} \in \mathbb{R}^{C\,\times\,H\,\times\,W},
+\qquad C = N_{\text{shells}} + n_{\text{derived}} = 10,\ H = 256,\ W = 512,$$
+
+with corresponding label $y \in \{0, \ldots, K-1\}$ ($K = 10$ for
+ModelNet10, $K = 40$ for ModelNet40). This is the contract every
+classifier in Section 5 consumes.
 
 ---
 
@@ -643,4 +976,10 @@ classification methods on ModelNet10 and ModelNet40.
 
 [16] Kerbl et al. 3D Gaussian Splatting for Real-Time Radiance Field
      Rendering. SIGGRAPH 2023.
+
+[17] Yun et al. CutMix: Regularization Strategy to Train Strong Classifiers
+     with Localizable Features. ICCV 2019.
+
+[18] Shoemake. Animating Rotation with Quaternion Curves. SIGGRAPH 1985.
+     (Standard quaternion-to-rotation-matrix formula used in §3.5)
 ```
