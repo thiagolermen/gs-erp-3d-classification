@@ -51,6 +51,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.models.backbones.resnet_hsdc import HSDCNet, SWHDCResNet
+from src.models.backbones.resnet_baseline import ResNet34Baseline, ResNet50Baseline
 from src.preprocessing.augmentation import cutmix_erp
 from src.preprocessing.dataset import build_dataloaders
 from src.training.scheduler import EarlyStopping, build_optimizer, build_lr_scheduler
@@ -93,8 +94,14 @@ def build_model(cfg: dict) -> nn.Module:
 
     Supported ``backbone + block`` combinations:
 
-    - ``resnet34 + hsdc``  → :class:`HSDCNet`
-    - ``resnet50 + swhdc`` → :class:`SWHDCResNet`
+    - ``resnet34 + hsdc``           → :class:`HSDCNet`
+    - ``resnet50 + swhdc``          → :class:`SWHDCResNet`
+    - ``resnet34 + none|baseline``  → :class:`ResNet34Baseline`
+    - ``resnet50 + none|baseline``  → :class:`ResNet50Baseline`
+
+    The baseline (block ``none`` / ``baseline`` / ``plain``) variants are
+    plain ResNets with standard convolutions in place of the distortion-
+    correction block — the ablation baselines for the HSDC / SWHDC blocks.
 
     The number of input channels is read from ``cfg['model']['in_channels']``
     (default 8, matching the N_shells=8 cascading-sphere radiance-field ERP).
@@ -118,15 +125,24 @@ def build_model(cfg: dict) -> nn.Module:
     in_channels = int(model_cfg.get("in_channels", 8))
     dropout     = float(model_cfg.get("dropout", 0.0))
 
+    baseline_blocks = {"none", "baseline", "plain", ""}
+
     if backbone == "resnet34" and block == "hsdc":
         return HSDCNet(in_channels=in_channels, num_classes=num_classes, dropout=dropout)
 
     if backbone == "resnet50" and block == "swhdc":
         return SWHDCResNet(in_channels=in_channels, num_classes=num_classes, dropout=dropout)
 
+    if backbone == "resnet34" and block in baseline_blocks:
+        return ResNet34Baseline(in_channels=in_channels, num_classes=num_classes, dropout=dropout)
+
+    if backbone == "resnet50" and block in baseline_blocks:
+        return ResNet50Baseline(in_channels=in_channels, num_classes=num_classes, dropout=dropout)
+
     raise ValueError(
         f"Unsupported backbone+block combination: '{backbone}' + '{block}'. "
-        "Valid options: resnet34+hsdc, resnet50+swhdc."
+        "Valid options: resnet34+hsdc, resnet50+swhdc, "
+        "resnet34+none (baseline), resnet50+none (baseline)."
     )
 
 

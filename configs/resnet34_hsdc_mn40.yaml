@@ -50,7 +50,7 @@ training:
   mixed_precision: true
   label_smoothing: 0.1
   class_weighted_loss: true
-  use_mix_augmentation: false         # master switch — set to false to disable both MixUp and CutMix (ablation)
+  use_mix_augmentation: true          # master switch — set to false to disable both MixUp and CutMix (ablation)
   mixup_alpha: 0.4
   cutmix_alpha: 0.4                  # CutMix — alternates 50/50 with MixUp per batch
 

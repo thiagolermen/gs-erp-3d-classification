@@ -27,6 +27,7 @@ from src.models.blocks.hsdc import HSDCBlock
 from src.models.blocks.swhdc import SWHDCBlock, compute_swhdc_weights
 from src.models.classifier import ClassificationHead
 from src.models.backbones.resnet_hsdc import HSDCNet, SWHDCResNet
+from src.models.backbones.resnet_baseline import ResNet34Baseline, ResNet50Baseline
 
 
 # ---------------------------------------------------------------------------
@@ -357,4 +358,66 @@ class TestSWHDCResNet:
         swhdc_weight_params = [n for n in param_names if "swhdc_weights" in n]
         assert len(swhdc_weight_params) == 0, (
             f"SWHDC weights found in parameters: {swhdc_weight_params}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Plain ResNet baselines (no distortion-correction block) — ablation models
+# ---------------------------------------------------------------------------
+
+class TestResNetBaselines:
+    """Shape and parameter-count checks for the plain ResNet-34/50 baselines."""
+
+    @pytest.mark.parametrize("num_classes", [10, 40])
+    def test_resnet34_output_shape(self, num_classes: int) -> None:
+        """ResNet34Baseline must map (B, 8, 256, 512) → (B, num_classes)."""
+        model = ResNet34Baseline(in_channels=8, num_classes=num_classes)
+        model.eval()
+        with torch.no_grad():
+            y = model(_rand((2, 8, 256, 512)))
+        assert y.shape == (2, num_classes)
+
+    @pytest.mark.parametrize("num_classes", [10, 40])
+    def test_resnet50_output_shape(self, num_classes: int) -> None:
+        """ResNet50Baseline must map (B, 8, 256, 512) → (B, num_classes)."""
+        model = ResNet50Baseline(in_channels=8, num_classes=num_classes)
+        model.eval()
+        with torch.no_grad():
+            y = model(_rand((1, 8, 256, 512)))
+        assert y.shape == (1, num_classes)
+
+    def test_resnet34_accepts_10_channels(self) -> None:
+        """Baseline must accept the 10-channel RF-ERP used by the configs."""
+        model = ResNet34Baseline(in_channels=10, num_classes=10)
+        model.eval()
+        with torch.no_grad():
+            y = model(_rand((1, 10, 256, 512)))
+        assert y.shape == (1, 10)
+
+    def test_resnet34_rejects_wrong_channels(self) -> None:
+        model = ResNet34Baseline(in_channels=8, num_classes=10)
+        model.eval()
+        with pytest.raises((RuntimeError, ValueError)):
+            with torch.no_grad():
+                model(_rand((1, 3, 256, 512)))
+
+    def test_resnet34_param_count_approx_21m(self) -> None:
+        """Standard ResNet-34 has ≈ 21.3 M params (±10%); much larger than the
+        5.3 M HSDCNet — that efficiency gap is exactly what HSDC's shared
+        dilated branches buy, and what this baseline deliberately lacks."""
+        model = ResNet34Baseline(in_channels=8, num_classes=10)
+        n_params = _count_params(model)
+        target   = 21_300_000
+        assert abs(n_params - target) / target < 0.10, (
+            f"ResNet34Baseline has {n_params:,} params; expected ≈ {target:,} (±10%)"
+        )
+
+    def test_resnet50_param_count_approx_23_5m(self) -> None:
+        """Standard ResNet-50 has ≈ 23.5 M params (±10%), parameter-comparable
+        to SWHDCResNet (25.5 M), since SWHDC adds zero trainable parameters."""
+        model = ResNet50Baseline(in_channels=8, num_classes=10)
+        n_params = _count_params(model)
+        target   = 23_500_000
+        assert abs(n_params - target) / target < 0.10, (
+            f"ResNet50Baseline has {n_params:,} params; expected ≈ {target:,} (±10%)"
         )

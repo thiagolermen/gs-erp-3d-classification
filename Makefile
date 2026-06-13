@@ -222,6 +222,22 @@ baselines-mn40:
 baselines-all: baselines-mn10 baselines-mn40
 	@echo "All baseline experiments complete."
 
+# Plain ResNet-34/50 ablation baselines (no HSDC/SWHDC block, from scratch).
+# Train these alongside the HSDC/SWHDC runs to isolate each block's contribution.
+.PHONY: plain-mn10
+plain-mn10:
+	$(MAKE) train CONFIG=configs/resnet34_baseline_mn10.yaml
+	$(MAKE) train CONFIG=configs/resnet50_baseline_mn10.yaml
+
+.PHONY: plain-mn40
+plain-mn40:
+	$(MAKE) train CONFIG=configs/resnet34_baseline_mn40.yaml
+	$(MAKE) train CONFIG=configs/resnet50_baseline_mn40.yaml
+
+.PHONY: plain-all
+plain-all: plain-mn10 plain-mn40
+	@echo "All plain-ResNet ablation baselines complete."
+
 # =============================================================================
 # Evaluation
 # =============================================================================
@@ -244,6 +260,13 @@ evaluate-all:
 	$(MAKE) evaluate CONFIG=configs/resnet34_hsdc_mn40.yaml CHECKPOINT=experiments/resnet34_hsdc_mn40_seed42/best_model.pt
 	$(MAKE) evaluate CONFIG=configs/resnet50_swhdc_mn10.yaml CHECKPOINT=experiments/resnet50_swhdc_mn10_seed42/best_model.pt
 	$(MAKE) evaluate CONFIG=configs/resnet50_swhdc_mn40.yaml CHECKPOINT=experiments/resnet50_swhdc_mn40_seed42/best_model.pt
+
+.PHONY: evaluate-plain
+evaluate-plain:
+	$(MAKE) evaluate CONFIG=configs/resnet34_baseline_mn10.yaml CHECKPOINT=experiments/resnet34_baseline_mn10_seed42/best_model.pt
+	$(MAKE) evaluate CONFIG=configs/resnet34_baseline_mn40.yaml CHECKPOINT=experiments/resnet34_baseline_mn40_seed42/best_model.pt
+	$(MAKE) evaluate CONFIG=configs/resnet50_baseline_mn10.yaml CHECKPOINT=experiments/resnet50_baseline_mn10_seed42/best_model.pt
+	$(MAKE) evaluate CONFIG=configs/resnet50_baseline_mn40.yaml CHECKPOINT=experiments/resnet50_baseline_mn40_seed42/best_model.pt
 
 .PHONY: evaluate-all-tta
 evaluate-all-tta:

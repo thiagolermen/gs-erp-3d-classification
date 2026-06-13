@@ -231,3 +231,6 @@ docs/diagrams/
 
 # TCC LaTeX document (not needed at runtime)
 tcc/
+
+# Junction to tcc/images so ../images/ figure paths resolve when compiling tcc/cic-tc.tex locally
+/images/

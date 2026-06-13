@@ -57,6 +57,10 @@ matplotlib.rcParams.update({
     "legend.fontsize":     9,
     "xtick.labelsize":     9,
     "ytick.labelsize":     9,
+    # Embed TrueType fonts instead of Type 3 outlines (avoids "no glyph" warnings
+    # in some PDF viewers and is preferred for printing / PDF/A archival).
+    "pdf.fonttype":        42,
+    "ps.fonttype":         42,
 })
 
 # Colour palette — accessible, print-safe
@@ -73,12 +77,84 @@ _PALETTE = {
 _SAVE_FORMATS = ("png", "pdf")
 
 
+def _flatten_transparency(fig: plt.Figure) -> None:
+    """Composite semi-transparent artists over white to eliminate PDF transparency ops.
+
+    matplotlib's PDF backend emits ExtGState entries with ``ca``/``CA < 1`` for
+    every artist whose alpha is strictly between 0 and 1.  These transparency
+    operators are rendered incorrectly (dark backgrounds, artefacts) by some PDF
+    viewers and by pdflatex's inclusion pipeline on certain TeX Live installations.
+
+    This function walks the figure tree and, for each artist with alpha in (0, 1),
+    composites its fill/edge colour over white and resets the artist alpha to 1,
+    producing identical appearance with no transparency operators in the PDF.
+    """
+    import matplotlib.collections as mc
+    import matplotlib.lines as ml
+    import matplotlib.patches as mp
+    import matplotlib.colors as mcolors
+
+    _WHITE = np.array([1.0, 1.0, 1.0])
+
+    def _comp(rgba: np.ndarray, alpha: float) -> np.ndarray:
+        rgb = np.asarray(rgba)[:3]
+        return np.append(alpha * rgb + (1.0 - alpha) * _WHITE, 1.0)
+
+    def _fix(artist) -> None:
+        alpha = artist.get_alpha()
+        if alpha is not None and 0.0 < alpha < 1.0:
+            if isinstance(artist, mp.Patch):
+                fc = np.array(mcolors.to_rgba(artist.get_facecolor()))
+                ec = np.array(mcolors.to_rgba(artist.get_edgecolor()))
+                artist.set_facecolor(_comp(fc, alpha))
+                artist.set_edgecolor(_comp(ec, alpha))
+                artist.set_alpha(1.0)
+            elif isinstance(artist, mc.Collection):
+                raw_ec = artist.get_edgecolor()
+                raw_fc = artist.get_facecolor()
+                # Set _alpha = 1.0 FIRST; mcolors.to_rgba_array multiplies by _alpha.
+                artist._alpha = 1.0
+                if hasattr(raw_ec, "__len__") and len(raw_ec):
+                    artist.set_edgecolor([_comp(c, alpha) for c in raw_ec])
+                if hasattr(raw_fc, "__len__") and len(raw_fc):
+                    try:
+                        artist.set_facecolor([_comp(c, alpha) for c in raw_fc])
+                    except Exception:
+                        pass
+            elif isinstance(artist, ml.Line2D):
+                c = np.array(mcolors.to_rgba(artist.get_color()))
+                artist.set_color(_comp(c, alpha))
+                artist.set_alpha(1.0)
+        for child in artist.get_children():
+            _fix(child)
+
+    _fix(fig)
+
+    # 3D axis panes are not reachable via get_children() — fix them explicitly.
+    for ax in fig.get_axes():
+        for axis_name in ("xaxis", "yaxis", "zaxis"):
+            axis = getattr(ax, axis_name, None)
+            if axis is None or not hasattr(axis, "pane"):
+                continue
+            pane = axis.pane
+            a = pane.get_alpha()
+            if a is not None and 0.0 < a < 1.0:
+                fc = np.array(mcolors.to_rgba(pane.get_facecolor()))
+                ec = np.array(mcolors.to_rgba(pane.get_edgecolor()))
+                pane.set_facecolor(_comp(fc, a))
+                pane.set_edgecolor(_comp(ec, a))
+                pane.set_alpha(1.0)
+
+
 def _save(fig: plt.Figure, path: Path | None) -> None:
     """Save figure to PNG (300 dpi) and PDF if *path* is given."""
     if path is None:
         return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Composite all semi-transparent artists over white before writing PDF so
+    # the output contains no transparency operators (ca/CA < 1 in ExtGState).
+    _flatten_transparency(fig)
     for ext in _SAVE_FORMATS:
         fig.savefig(path.with_suffix(f".{ext}"), dpi=300, bbox_inches="tight")
 
