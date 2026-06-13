@@ -1066,6 +1066,127 @@ def make_rf_erp_pipeline_steps() -> None:
     save(fig, "methodology", "rf_erp_pipeline_steps")
 
 
+def make_log_compression() -> None:
+    """Empirical justification for the log1p density transform.
+
+    Aggregates the raw shell-density values of a random sample of ModelNet10
+    objects from the production cache and shows, in three panels, why an
+    element-wise ``log(1 + rho)`` compression is applied:
+
+      (a) the raw density is extremely heavy-tailed (a large spike at rho=0
+          plus a long right tail), so a linear input would let a handful of
+          high-density splats dominate the dynamic range;
+      (b) after log1p the populated densities occupy a well-spread, bounded
+          band, stabilising the input statistics;
+      (c) the transfer curve log(1+rho) has its steepest slope near rho=0
+          (derivative 1/(1+rho)), which amplifies the low-density boundary
+          signal while compressing the high-density tail.
+
+    Statistics are computed once and printed so the numbers can be quoted in
+    the text. The cache stores the RAW density ERP (log1p is applied at load
+    time in the dataset), so the values here are the un-transformed densities.
+    """
+    import glob
+    import random
+
+    files = glob.glob(str(ERP_CACHE / "*" / "*" / "*.npy"))
+    if not files:
+        print("  ** no ERP cache found; skipping log_compression figure",
+              file=sys.stderr)
+        return
+    random.Random(0).shuffle(files)
+    files = files[:150]
+
+    # Aggregate a subsampled pixel population (keep memory modest).
+    rng = np.random.default_rng(0)
+    pooled: list[np.ndarray] = []
+    per_obj_max: list[float] = []
+    for f in files:
+        a = np.load(f).astype(np.float32).ravel()
+        per_obj_max.append(float(a.max()))
+        # Subsample 60k pixels/object so the histogram is representative
+        # without holding the full 1M-pixel ERP for every object.
+        idx = rng.choice(a.size, size=min(60_000, a.size), replace=False)
+        pooled.append(a[idx])
+    rho = np.concatenate(pooled)
+    nz = rho[rho > 1e-6]
+
+    frac_empty = float((rho <= 1e-6).mean())
+    p99 = float(np.percentile(rho, 99))
+    rho_max = float(rho.max())
+    ratio = rho_max / max(p99, 1e-6)
+    print(f"  log1p stats | empty={frac_empty:.1%}  p99={p99:.2f}  "
+          f"max={rho_max:.2f}  max/p99={ratio:.1f}  "
+          f"log1p(max)={np.log1p(rho_max):.2f}  "
+          f"median per-obj max={np.median(per_obj_max):.1f}")
+
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.2))
+
+    # --- (a) raw density histogram, log-scaled counts -------------------
+    ax = axes[0]
+    ax.hist(rho, bins=120, range=(0, np.percentile(rho, 99.95)),
+            color=PALETTE["hsdc"], edgecolor="none", alpha=0.85)
+    ax.set_yscale("log")
+    ax.axvline(p99, color=PALETTE["red"], lw=1.4, ls="--")
+    ax.text(p99, ax.get_ylim()[1] * 0.5, f"  $p_{{99}}\\approx{p99:.0f}$",
+            color=PALETTE["red"], fontsize=9, va="top")
+    ax.set_xlabel(r"raw shell density $\rho$")
+    ax.set_ylabel("pixel count (log)")
+    ax.set_title("(a) Raw density: heavy-tailed")
+    ax.text(0.97, 0.92,
+            f"{frac_empty:.0%} of pixels empty\n"
+            f"$\\rho_{{\\max}}\\approx{rho_max:.0f}$ "
+            f"($\\approx{ratio:.0f}\\times\\,p_{{99}}$)",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8.5,
+            bbox=dict(boxstyle="round,pad=0.3", fc="white",
+                      ec=PALETTE["grey"], alpha=0.9))
+
+    # --- (b) log1p density histogram ------------------------------------
+    ax = axes[1]
+    ax.hist(np.log1p(nz), bins=120, color=PALETTE["resnet"],
+            edgecolor="none", alpha=0.85)
+    ax.axvline(np.log1p(p99), color=PALETTE["red"], lw=1.4, ls="--")
+    ax.set_xlabel(r"$\tilde\rho = \log(1+\rho)$")
+    ax.set_ylabel("populated-pixel count")
+    ax.set_title("(b) After log1p: stabilised range")
+    ax.text(0.97, 0.92,
+            f"range $[0,\\;{np.log1p(rho_max):.1f}]$\n"
+            f"bulk in $[0,\\;{np.log1p(p99):.1f}]$",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8.5,
+            bbox=dict(boxstyle="round,pad=0.3", fc="white",
+                      ec=PALETTE["grey"], alpha=0.9))
+
+    # --- (c) transfer curve ---------------------------------------------
+    ax = axes[2]
+    xs = np.linspace(0, rho_max, 400)
+    ax.plot(xs, np.log1p(xs), color=PALETTE["edge"], lw=2.0,
+            label=r"$\log(1+\rho)$")
+    ax.plot([0, rho_max], [0, rho_max / rho_max * np.log1p(rho_max)],
+            color=PALETTE["grey"], lw=1.0, ls=":", alpha=0.0)  # spacer
+    # Mark how p99 and max map through the curve
+    for x, lab, col in [(p99, "$p_{99}$", PALETTE["red"]),
+                        (rho_max, "$\\rho_{\\max}$", PALETTE["swhdc"])]:
+        y = float(np.log1p(x))
+        ax.plot([x, x], [0, y], color=col, lw=1.0, ls="--", alpha=0.7)
+        ax.plot([0, x], [y, y], color=col, lw=1.0, ls="--", alpha=0.7)
+        ax.scatter([x], [y], color=col, s=22, zorder=5)
+    ax.annotate("steep near 0:\namplifies boundaries",
+                xy=(rho_max * 0.02, np.log1p(rho_max * 0.02)),
+                xytext=(rho_max * 0.30, np.log1p(rho_max) * 0.45),
+                fontsize=8.5, color=PALETTE["amber"],
+                arrowprops=dict(arrowstyle="->", color=PALETTE["amber"], lw=1.2))
+    ax.set_xlabel(r"raw density $\rho$")
+    ax.set_ylabel(r"$\tilde\rho$")
+    ax.set_title("(c) Transfer curve: compress tail, expand near 0")
+
+    fig.suptitle(
+        "Why log compression: raw shell density on ModelNet10 is heavy-tailed",
+        fontsize=13, y=1.02,
+    )
+    plt.tight_layout()
+    save(fig, "methodology", "log_compression")
+
+
 def make_spatial_culling() -> None:
     """Spatial-culling 3σ illustration on a real airplane PLY."""
     g = _load_ply("airplane", "train", "airplane_0001")
@@ -1478,6 +1599,7 @@ ALL_FIGURES = {
     "egonerf_shells":         make_egonerf_shells,
     # Batch C
     "rf_erp_pipeline_steps":  make_rf_erp_pipeline_steps,
+    "log_compression":        make_log_compression,
     "spatial_culling":        make_spatial_culling,
     "augmentation_samples":   make_augmentation_samples,
     "mixup_cutmix":           make_mixup_cutmix,

@@ -22,6 +22,7 @@ data:
   num_workers: 4
   batch_size: 32
   train_val_split: 0.8
+  stratified_split: true               # class-stratified train/val split (matches per-class proportions)
   augment_prob: 0.3                  # per-primitive augmentation probability (0.15 in paper)
   log1p_transform: true              # compress [0,~14] → [0,~2.7]; amplifies low-density boundaries
   derived_channels:                  # appended after log1p, before augmentation

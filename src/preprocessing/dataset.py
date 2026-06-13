@@ -145,6 +145,11 @@ class GaussianERPDataset(Dataset):
         augment_train:  Apply augmentation to the training split (default True).
         val_fraction:   Fraction of training set reserved for validation
                         (default 0.2; SWHDC paper §IV-A).
+        stratified_split: If True (default), reserve ``val_fraction`` of EACH
+                        class for validation so the per-class proportions of
+                        the train and val splits match the official training
+                        set.  If False, fall back to a single global random
+                        shuffle (the original, non-stratified behaviour).
         seed:           Random seed for the train/val split (default 42).
         transform:      Optional callable applied to the ERP tensor after
                         augmentation (e.g. normalisation).
@@ -169,6 +174,7 @@ class GaussianERPDataset(Dataset):
         augment_train: bool = True,
         augment_prob: float = 0.3,
         val_fraction: float = 0.2,
+        stratified_split: bool = True,
         seed: int = 42,
         transform: Callable | None = None,
         log1p_transform: bool = False,
@@ -195,6 +201,7 @@ class GaussianERPDataset(Dataset):
         self._do_augment  = augment_train and (split == "train")
         self._augment_prob = augment_prob
         self.val_fraction = val_fraction
+        self.stratified_split = stratified_split
         self.seed         = seed
         self.transform    = transform
         self._log1p_transform = log1p_transform
@@ -309,7 +316,10 @@ class GaussianERPDataset(Dataset):
         For 'test': all PLY files under <category>/test/<id>/point_cloud.ply.
         For 'train'/'val': all PLY files under <category>/train/ are split
             (1 - val_fraction) / val_fraction with a fixed seed
-            (SWHDC paper §IV-A: 80% / 20%).
+            (SWHDC paper §IV-A: 80% / 20%).  When ``stratified_split`` is True
+            (default) the split is class-stratified: each class contributes
+            ``val_fraction`` of its own members to the validation set, so the
+            per-class proportions match the official training set.
         """
         all_samples: list[tuple[Path, int]] = []
 
@@ -324,8 +334,10 @@ class GaussianERPDataset(Dataset):
                     all_samples.append((ply, label))
 
         else:
-            # Collect all preset training PLY files
+            # Collect all preset training PLY files, recording each sample's
+            # position per class so the split can be stratified.
             preset_train: list[tuple[Path, int]] = []
+            class_members: dict[int, list[int]] = {}
             for cls in self.categories:
                 label     = self.class_to_idx[cls]
                 train_dir = self.data_root / cls / "train"
@@ -333,17 +345,37 @@ class GaussianERPDataset(Dataset):
                     logger.warning("Missing train directory: %s", train_dir)
                     continue
                 for ply in sorted(train_dir.rglob("point_cloud.ply")):
+                    class_members.setdefault(label, []).append(len(preset_train))
                     preset_train.append((ply, label))
 
-            # Deterministic split — SWHDC paper §IV-A: 80% train / 20% val
-            rng     = np.random.default_rng(self.seed)
-            indices = np.arange(len(preset_train))
-            rng.shuffle(indices)
-            n_train = int(len(indices) * (1.0 - self.val_fraction))
-            train_idx = indices[:n_train]
-            val_idx   = indices[n_train:]
+            # Deterministic split — SWHDC paper §IV-A: 80% train / 20% val.
+            # Both the 'train' and 'val' dataset instances run this with the
+            # same seed and the same (sorted) iteration order, so they produce
+            # complementary partitions of the same shuffle.
+            rng = np.random.default_rng(self.seed)
 
-            chosen = train_idx if self.split == "train" else val_idx
+            if self.stratified_split:
+                # Class-stratified: reserve val_fraction of EACH class for
+                # validation.  Keeps the per-class proportions of train and val
+                # equal to the official training set, which lowers the variance
+                # of the validation metric on small classes.
+                train_idx: list[int] = []
+                val_idx:   list[int] = []
+                for label in sorted(class_members):
+                    members = np.array(class_members[label])
+                    members = members[rng.permutation(len(members))]
+                    n_train_c = int(round(len(members) * (1.0 - self.val_fraction)))
+                    train_idx.extend(members[:n_train_c].tolist())
+                    val_idx.extend(members[n_train_c:].tolist())
+                chosen = train_idx if self.split == "train" else val_idx
+            else:
+                # Global (non-stratified) random shuffle.
+                indices = np.arange(len(preset_train))
+                rng.shuffle(indices)
+                n_train = int(len(indices) * (1.0 - self.val_fraction))
+                chosen = (indices[:n_train] if self.split == "train"
+                          else indices[n_train:]).tolist()
+
             all_samples = [preset_train[i] for i in sorted(chosen)]
 
         if not all_samples:
@@ -527,6 +559,9 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
     else:
         val_fraction = 0.2
 
+    # Class-stratified train/val split (default True)
+    stratified_split = bool(data_cfg.get("stratified_split", True))
+
     # Seed may live at the top-level config or inside the data section
     seed = int(data_cfg.get("seed", config.get("seed", 42)))
 
@@ -551,6 +586,7 @@ def build_dataloaders(config: dict) -> dict[str, DataLoader]:
             augment_train=True,
             augment_prob=augment_prob,
             val_fraction=val_fraction,
+            stratified_split=stratified_split,
             seed=seed,
             log1p_transform=log1p_transform,
             derived_channels=derived_channels,
