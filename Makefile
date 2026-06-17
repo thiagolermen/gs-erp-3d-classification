@@ -238,6 +238,20 @@ plain-mn40:
 plain-all: plain-mn10 plain-mn40
 	@echo "All plain-ResNet ablation baselines complete."
 
+# Vision Transformer (ViT-Tiny) baseline — same RF-3DGS 10-channel ERP input as
+# the CNNs, trained from scratch. Isolates the Transformer-vs-CNN comparison.
+.PHONY: vit-mn10
+vit-mn10:
+	$(MAKE) train CONFIG=configs/vit_mn10.yaml
+
+.PHONY: vit-mn40
+vit-mn40:
+	$(MAKE) train CONFIG=configs/vit_mn40.yaml
+
+.PHONY: vit-all
+vit-all: vit-mn10 vit-mn40
+	@echo "All ViT experiments complete."
+
 # =============================================================================
 # Evaluation
 # =============================================================================
@@ -267,6 +281,11 @@ evaluate-plain:
 	$(MAKE) evaluate CONFIG=configs/resnet34_baseline_mn40.yaml CHECKPOINT=experiments/resnet34_baseline_mn40_seed42/best_model.pt
 	$(MAKE) evaluate CONFIG=configs/resnet50_baseline_mn10.yaml CHECKPOINT=experiments/resnet50_baseline_mn10_seed42/best_model.pt
 	$(MAKE) evaluate CONFIG=configs/resnet50_baseline_mn40.yaml CHECKPOINT=experiments/resnet50_baseline_mn40_seed42/best_model.pt
+
+.PHONY: evaluate-vit
+evaluate-vit:
+	$(MAKE) evaluate CONFIG=configs/vit_mn10.yaml CHECKPOINT=experiments/vit_mn10_seed42/best_checkpoint.pt
+	$(MAKE) evaluate CONFIG=configs/vit_mn40.yaml CHECKPOINT=experiments/vit_mn40_seed42/best_checkpoint.pt
 
 .PHONY: evaluate-all-tta
 evaluate-all-tta:
