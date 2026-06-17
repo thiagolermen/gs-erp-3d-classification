@@ -1132,7 +1132,7 @@ def make_log_compression() -> None:
             color=PALETTE["red"], fontsize=9, va="top")
     ax.set_xlabel(r"raw shell density $\rho$")
     ax.set_ylabel("pixel count (log)")
-    ax.set_title("(a) Raw density: heavy-tailed")
+    ax.set_title(r"(a) Raw density $\rho$")
     ax.text(0.97, 0.92,
             f"{frac_empty:.0%} of pixels empty\n"
             f"$\\rho_{{\\max}}\\approx{rho_max:.0f}$ "
@@ -1148,7 +1148,7 @@ def make_log_compression() -> None:
     ax.axvline(np.log1p(p99), color=PALETTE["red"], lw=1.4, ls="--")
     ax.set_xlabel(r"$\tilde\rho = \log(1+\rho)$")
     ax.set_ylabel("populated-pixel count")
-    ax.set_title("(b) After log1p: stabilised range")
+    ax.set_title(r"(b) After $\log(1+\rho)$")
     ax.text(0.97, 0.92,
             f"range $[0,\\;{np.log1p(rho_max):.1f}]$\n"
             f"bulk in $[0,\\;{np.log1p(p99):.1f}]$",
@@ -1170,19 +1170,10 @@ def make_log_compression() -> None:
         ax.plot([x, x], [0, y], color=col, lw=1.0, ls="--", alpha=0.7)
         ax.plot([0, x], [y, y], color=col, lw=1.0, ls="--", alpha=0.7)
         ax.scatter([x], [y], color=col, s=22, zorder=5)
-    ax.annotate("steep near 0:\namplifies boundaries",
-                xy=(rho_max * 0.02, np.log1p(rho_max * 0.02)),
-                xytext=(rho_max * 0.30, np.log1p(rho_max) * 0.45),
-                fontsize=8.5, color=PALETTE["amber"],
-                arrowprops=dict(arrowstyle="->", color=PALETTE["amber"], lw=1.2))
     ax.set_xlabel(r"raw density $\rho$")
     ax.set_ylabel(r"$\tilde\rho$")
-    ax.set_title("(c) Transfer curve: compress tail, expand near 0")
+    ax.set_title(r"(c) Transfer curve $\log(1+\rho)$")
 
-    fig.suptitle(
-        "Why log compression: raw shell density on ModelNet10 is heavy-tailed",
-        fontsize=13, y=1.02,
-    )
     plt.tight_layout()
     save(fig, "methodology", "log_compression")
 
