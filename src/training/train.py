@@ -52,6 +52,7 @@ from tqdm import tqdm
 
 from src.models.backbones.resnet_hsdc import HSDCNet, SWHDCResNet
 from src.models.backbones.resnet_baseline import ResNet34Baseline, ResNet50Baseline
+from src.models.backbones.vit import ERPViT
 from src.preprocessing.augmentation import cutmix_erp
 from src.preprocessing.dataset import build_dataloaders
 from src.training.scheduler import EarlyStopping, build_optimizer, build_lr_scheduler
@@ -139,10 +140,30 @@ def build_model(cfg: dict) -> nn.Module:
     if backbone == "resnet50" and block in baseline_blocks:
         return ResNet50Baseline(in_channels=in_channels, num_classes=num_classes, dropout=dropout)
 
+    if backbone == "vit":
+        # Plain Transformer baseline on the identical RF-3DGS ERP. The block field
+        # is unused (no distortion-correction block); any of none/baseline/'' is fine.
+        return ERPViT(
+            in_channels=in_channels,
+            num_classes=num_classes,
+            img_size=(
+                int(model_cfg.get("erp_height", 256)),
+                int(model_cfg.get("erp_width", 512)),
+            ),
+            patch_size=int(model_cfg.get("patch_size", 16)),
+            embed_dim=int(model_cfg.get("embed_dim", 192)),
+            depth=int(model_cfg.get("depth", 12)),
+            num_heads=int(model_cfg.get("num_heads", 3)),
+            mlp_ratio=float(model_cfg.get("mlp_ratio", 4.0)),
+            dropout=dropout,
+            attn_dropout=float(model_cfg.get("attn_dropout", 0.0)),
+            drop_path_rate=float(model_cfg.get("drop_path_rate", 0.1)),
+        )
+
     raise ValueError(
         f"Unsupported backbone+block combination: '{backbone}' + '{block}'. "
         "Valid options: resnet34+hsdc, resnet50+swhdc, "
-        "resnet34+none (baseline), resnet50+none (baseline)."
+        "resnet34+none (baseline), resnet50+none (baseline), vit."
     )
 
 

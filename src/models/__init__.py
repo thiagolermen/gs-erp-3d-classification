@@ -10,9 +10,21 @@ backbones — Full model architectures (backbone + block + head).
 from src.models.classifier import ClassificationHead
 from src.models.blocks.hsdc import HSDCBlock
 from src.models.blocks.swhdc import SWHDCBlock
+from src.models.backbones import (
+    HSDCNet,
+    SWHDCResNet,
+    ResNet34Baseline,
+    ResNet50Baseline,
+    ERPViT,
+)
 
 __all__ = [
     "ClassificationHead",
     "HSDCBlock",
     "SWHDCBlock",
+    "HSDCNet",
+    "SWHDCResNet",
+    "ResNet34Baseline",
+    "ResNet50Baseline",
+    "ERPViT",
 ]

@@ -28,6 +28,7 @@ from src.models.blocks.swhdc import SWHDCBlock, compute_swhdc_weights
 from src.models.classifier import ClassificationHead
 from src.models.backbones.resnet_hsdc import HSDCNet, SWHDCResNet
 from src.models.backbones.resnet_baseline import ResNet34Baseline, ResNet50Baseline
+from src.models.backbones.vit import ERPViT
 
 
 # ---------------------------------------------------------------------------
@@ -420,4 +421,70 @@ class TestResNetBaselines:
         target   = 23_500_000
         assert abs(n_params - target) / target < 0.10, (
             f"ResNet50Baseline has {n_params:,} params; expected ≈ {target:,} (±10%)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# ERPViT (Vision Transformer baseline) integration tests
+# ---------------------------------------------------------------------------
+
+class TestERPViT:
+    """Shape, regularisation, and parameter-count checks for the ViT baseline.
+
+    The ViT is fed the *identical* 10-channel RF-3DGS ERP used by the CNNs, so
+    it is the Transformer counterpart in the cross-backbone comparison.
+    """
+
+    @pytest.mark.parametrize("num_classes", [10, 40])
+    def test_output_shape(self, num_classes: int) -> None:
+        """ERPViT must map (B, 10, 256, 512) → (B, num_classes)."""
+        model = ERPViT(in_channels=10, num_classes=num_classes)
+        model.eval()
+        with torch.no_grad():
+            y = model(_rand((2, 10, 256, 512)))
+        assert y.shape == (2, num_classes)
+
+    def test_patch_grid_and_token_count(self) -> None:
+        """Patch 16 over 256×512 must yield a 16×32 grid = 512 patch tokens,
+        and a positional embedding of length 512 + 1 (CLS)."""
+        model = ERPViT(in_channels=10, num_classes=10, patch_size=16)
+        assert model.patch_embed.grid_size == (16, 32)
+        assert model.patch_embed.num_patches == 512
+        assert model.pos_embed.shape == (1, 513, 192)
+
+    def test_rejects_wrong_channels(self) -> None:
+        """ERPViT must reject inputs with the wrong channel count."""
+        model = ERPViT(in_channels=10, num_classes=10)
+        model.eval()
+        with pytest.raises((RuntimeError, ValueError)):
+            with torch.no_grad():
+                model(_rand((1, 3, 256, 512)))   # wrong: 3 instead of 10
+
+    def test_indivisible_patch_size_raises(self) -> None:
+        """An ERP size not divisible by the patch size must raise."""
+        with pytest.raises(ValueError, match="divisible"):
+            ERPViT(in_channels=10, num_classes=10, img_size=(256, 500), patch_size=16)
+
+    def test_train_mode_runs_with_drop_path(self) -> None:
+        """Forward+backward in train() mode must run (exercises stochastic depth)."""
+        model = ERPViT(in_channels=10, num_classes=10, drop_path_rate=0.2)
+        model.train()
+        y = model(_rand((2, 10, 256, 512)))
+        assert y.shape == (2, 10)
+        y.sum().backward()   # gradients must flow through the drop-path branches
+
+    def test_output_dtype(self) -> None:
+        model = ERPViT(in_channels=10, num_classes=10)
+        model.eval()
+        with torch.no_grad():
+            y = model(_rand((1, 10, 256, 512)))
+        assert y.dtype == torch.float32
+
+    def test_param_count_vit_tiny(self) -> None:
+        """ViT-Tiny (embed_dim=192, depth=12, heads=3) is ≈ 5.5 M params,
+        in the same ballpark as HSDCNet's 5.3 M for a fair comparison."""
+        model = ERPViT(in_channels=10, num_classes=10)
+        n_params = _count_params(model)
+        assert 4_000_000 < n_params < 8_000_000, (
+            f"ERPViT-Tiny has {n_params:,} params; expected 4M–8M"
         )
